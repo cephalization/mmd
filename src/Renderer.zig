@@ -142,7 +142,9 @@ pub fn deinit(
     renderer.global_uniform_buffer.release();
 }
 
-// TODO fix https://toji.dev/webgpu-best-practices/bind-groups.html
+// references
+// https://toji.dev/webgpu-best-practices/bind-groups.html
+// https://webgpufundamentals.org/webgpu/lessons/webgpu-uniforms.html
 pub fn renderFrame(
     core: *mach.Core,
     renderer: *Renderer,
