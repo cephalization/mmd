@@ -18,6 +18,7 @@ const uniform_offset = 256;
 const UniformBufferObject = extern struct {
     offset: Vec3,
     scale: f32,
+    deleteable: f32,
 };
 
 window: mach.ObjectID,
@@ -28,6 +29,7 @@ uniform_buffer: *gpu.Buffer,
 objects: mach.Objects(.{}, struct {
     position: Vec3,
     scale: f32,
+    deleteable: bool,
 }),
 
 pub fn init(
@@ -60,7 +62,7 @@ pub fn init(
         .mapped_at_creation = .false,
     });
 
-    const bind_group_layout_entry = gpu.BindGroupLayout.Entry.initBuffer(0, .{ .vertex = true }, .uniform, true, 0);
+    const bind_group_layout_entry = gpu.BindGroupLayout.Entry.initBuffer(0, .{ .vertex = true, .fragment = true }, .uniform, true, 0);
     const bind_group_layout = device.createBindGroupLayout(
         &gpu.BindGroupLayout.Descriptor.init(.{
             .label = label,
@@ -138,6 +140,7 @@ pub fn renderFrame(
         const ubo = UniformBufferObject{
             .offset = obj.position,
             .scale = obj.scale,
+            .deleteable = if (obj.deleteable) 1.0 else 0.0,
         };
         encoder.writeBuffer(renderer.uniform_buffer, uniform_offset * num_objects, &[_]UniformBufferObject{ubo});
         num_objects += 1;

@@ -20,6 +20,7 @@ player: mach.ObjectID,
 direction: Vec2 = vec2(0, 0),
 spawning: bool = false,
 spawn_timer: mach.time.Timer,
+delete_timer: mach.time.Timer,
 
 pub const main = mach.schedule(.{
     .{ mach.Core, .init },
@@ -54,11 +55,13 @@ pub fn init(
     const player = try renderer.objects.new(.{
         .position = vec3(0, 0, 0),
         .scale = 1.0,
+        .deleteable = false,
     });
 
     app.* = .{
         .timer = try mach.time.Timer.start(),
         .spawn_timer = try mach.time.Timer.start(),
+        .delete_timer = try mach.time.Timer.start(),
         .player = player,
     };
 }
@@ -91,6 +94,17 @@ pub fn tick(
                     .up => direction.v[1] -= 1,
                     .down => direction.v[1] += 1,
                     .space => spawning = false,
+                    .r => {
+                        // Mark all children of player as deleteable
+                        var children = try renderer.objects.getChildren(app.player);
+                        defer children.deinit();
+                        for (children.items) |child_id| {
+                            var child = renderer.objects.getValue(child_id);
+                            if (child.deleteable) continue;
+                            child.deleteable = true;
+                            renderer.objects.setValue(child_id, child);
+                        }
+                    },
                     else => {},
                 }
             },
@@ -123,11 +137,25 @@ pub fn tick(
             const new_obj = try renderer.objects.new(.{
                 .position = player.position,
                 .scale = 1.0 / 6.0,
+                .deleteable = false,
             });
 
             // Parent the object to the player, we'll make children 'follow' the parent below.
             try renderer.objects.addChild(app.player, new_obj);
         }
+    }
+
+    // Delete objects marked as deleteable, on a timer similar to the spawn timer.
+    if (app.delete_timer.read() > 1.0 / 60.0) {
+        _ = app.delete_timer.lap(); // Reset the timer
+        var children = try renderer.objects.getChildren(app.player);
+        defer children.deinit();
+        if (children.items.len == 0) return;
+        const child_id = children.items[0];
+        const child = renderer.objects.getValue(child_id);
+        if (!child.deleteable) return;
+        try renderer.objects.removeChild(app.player, child_id);
+        renderer.objects.delete(child_id);
     }
 
     // Multiply by delta_time to ensure that movement is the same speed regardless of the frame rate.

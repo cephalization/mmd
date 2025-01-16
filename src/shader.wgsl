@@ -2,6 +2,7 @@
 struct Uniform {
     pos: vec4<f32>,
 	scale: f32,
+    deleteable: f32,
 };
 
 @group(0) @binding(0) var<uniform> in : Uniform;
@@ -19,5 +20,10 @@ struct Uniform {
 }
 
 @fragment fn frag_main() -> @location(0) vec4<f32> {
-    return vec4<f32>(1.0, 0.0, 0.0, 0.0);
+    return vec4<f32>(
+        1.0 - in.deleteable,
+        0.0,
+        in.deleteable * 1.0,
+        1.0
+    );
 }
