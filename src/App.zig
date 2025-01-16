@@ -1,3 +1,4 @@
+const std = @import("std");
 const mach = @import("mach");
 const math = mach.math;
 const Renderer = @import("Renderer.zig");
@@ -11,7 +12,7 @@ const App = @This();
 
 pub const mach_module = .app;
 
-pub const mach_systems = .{ .main, .init, .deinit, .tick };
+pub const mach_systems = .{ .main, .init, .deinit, .tick, .onExit };
 
 // Global state for our app module.
 timer: mach.time.Timer,
@@ -28,7 +29,12 @@ pub const main = mach.schedule(.{
 
 pub const deinit = mach.schedule(.{
     .{ Renderer, .deinit },
+    .{ App, .onExit },
 });
+
+pub fn onExit() !void {
+    std.process.exit(0);
+}
 
 pub fn init(
     core: *mach.Core,
@@ -40,7 +46,7 @@ pub fn init(
     core.on_exit = app_mod.id.deinit;
 
     const window = try core.windows.new(.{
-        .title = "custom renderer",
+        .title = "mmd",
     });
     renderer.window = window;
 
@@ -74,6 +80,7 @@ pub fn tick(
                     .up => direction.v[1] += 1,
                     .down => direction.v[1] -= 1,
                     .space => spawning = true,
+                    .escape => core.exit(),
                     else => {},
                 }
             },
