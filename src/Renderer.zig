@@ -1,4 +1,5 @@
 const mach = @import("mach");
+const std = @import("std");
 const gpu = mach.gpu;
 const math = mach.math;
 
@@ -21,10 +22,17 @@ const UniformBufferObject = extern struct {
     deleteable: f32,
 };
 
+const GlobalUniform = extern struct {
+    zoom: f32,
+};
+
 window: mach.ObjectID,
 pipeline: *gpu.RenderPipeline,
-bind_groups: [num_bind_groups]*gpu.BindGroup,
+object_bind_groups: [num_bind_groups]*gpu.BindGroup,
 uniform_buffer: *gpu.Buffer,
+global_uniform_buffer: *gpu.Buffer,
+
+zoom: f32 = 1.0,
 
 objects: mach.Objects(.{}, struct {
     position: Vec3,
@@ -55,6 +63,8 @@ pub fn init(
     });
 
     const label = @tagName(mach_module) ++ ".init";
+
+    // Uniform buffer setup
     const uniform_buffer = device.createBuffer(&.{
         .label = label ++ " uniform buffer",
         .usage = .{ .copy_dst = true, .uniform = true },
@@ -62,30 +72,43 @@ pub fn init(
         .mapped_at_creation = .false,
     });
 
-    const bind_group_layout_entry = gpu.BindGroupLayout.Entry.initBuffer(0, .{ .vertex = true, .fragment = true }, .uniform, true, 0);
-    const bind_group_layout = device.createBindGroupLayout(
+    const global_uniform_buffer = device.createBuffer(&.{
+        .label = label ++ " global uniform buffer",
+        .usage = .{ .copy_dst = true, .uniform = true },
+        .size = @sizeOf(GlobalUniform),
+        .mapped_at_creation = .false,
+    });
+
+    // Create single bind group layout with both buffers
+    const object_bind_group_layout = device.createBindGroupLayout(
         &gpu.BindGroupLayout.Descriptor.init(.{
             .label = label,
-            .entries = &.{bind_group_layout_entry},
+            .entries = &.{
+                gpu.BindGroupLayout.Entry.initBuffer(0, .{ .vertex = true, .fragment = true }, .uniform, true, 0),
+                gpu.BindGroupLayout.Entry.initBuffer(1, .{ .vertex = true, .fragment = true }, .uniform, true, 0),
+            },
         }),
     );
-    defer bind_group_layout.release();
+    defer object_bind_group_layout.release();
 
-    var bind_groups: [num_bind_groups]*gpu.BindGroup = undefined;
-    for (bind_groups, 0..) |_, i| {
-        bind_groups[i] = device.createBindGroup(
+    var object_bind_groups: [num_bind_groups]*gpu.BindGroup = undefined;
+    for (object_bind_groups, 0..) |_, i| {
+        object_bind_groups[i] = device.createBindGroup(
             &gpu.BindGroup.Descriptor.init(.{
                 .label = label,
-                .layout = bind_group_layout,
-                .entries = &.{gpu.BindGroup.Entry.initBuffer(0, uniform_buffer, uniform_offset * i, @sizeOf(UniformBufferObject), @sizeOf(UniformBufferObject))},
+                .layout = object_bind_group_layout,
+                .entries = &.{
+                    gpu.BindGroup.Entry.initBuffer(0, uniform_buffer, uniform_offset * i, @sizeOf(UniformBufferObject), @sizeOf(UniformBufferObject)),
+                    gpu.BindGroup.Entry.initBuffer(1, global_uniform_buffer, 0, @sizeOf(GlobalUniform), @sizeOf(GlobalUniform)),
+                },
             }),
         );
     }
 
-    const bind_group_layouts = [_]*gpu.BindGroupLayout{bind_group_layout};
+    // Update pipeline layout creation
     const pipeline_layout = device.createPipelineLayout(&gpu.PipelineLayout.Descriptor.init(.{
         .label = label,
-        .bind_group_layouts = &bind_group_layouts,
+        .bind_group_layouts = &.{object_bind_group_layout},
     }));
     defer pipeline_layout.release();
 
@@ -103,8 +126,10 @@ pub fn init(
         .window = renderer.window,
         .objects = renderer.objects,
         .pipeline = pipeline,
-        .bind_groups = bind_groups,
+        .object_bind_groups = object_bind_groups,
         .uniform_buffer = uniform_buffer,
+        .global_uniform_buffer = global_uniform_buffer,
+        .zoom = 1.0,
     };
 }
 
@@ -112,10 +137,12 @@ pub fn deinit(
     renderer: *Renderer,
 ) !void {
     renderer.pipeline.release();
-    for (renderer.bind_groups) |bind_group| bind_group.release();
+    for (renderer.object_bind_groups) |bind_group| bind_group.release();
     renderer.uniform_buffer.release();
+    renderer.global_uniform_buffer.release();
 }
 
+// TODO fix https://toji.dev/webgpu-best-practices/bind-groups.html
 pub fn renderFrame(
     core: *mach.Core,
     renderer: *Renderer,
@@ -146,6 +173,11 @@ pub fn renderFrame(
         num_objects += 1;
     }
 
+    const global_ubo = GlobalUniform{
+        .zoom = renderer.zoom,
+    };
+    encoder.writeBuffer(renderer.global_uniform_buffer, 0, &[_]GlobalUniform{global_ubo});
+
     // Begin render pass
     const sky_blue_background = gpu.Color{ .r = 0.776, .g = 0.988, .b = 1, .a = 1 };
     const color_attachments = [_]gpu.RenderPassColorAttachment{.{
@@ -161,7 +193,7 @@ pub fn renderFrame(
     defer render_pass.release();
 
     // Draw
-    for (renderer.bind_groups[0..num_objects]) |bind_group| {
+    for (renderer.object_bind_groups[0..num_objects]) |bind_group| {
         render_pass.setPipeline(renderer.pipeline);
         render_pass.setBindGroup(0, bind_group, &.{0});
         render_pass.draw(3, 1, 0, 0);

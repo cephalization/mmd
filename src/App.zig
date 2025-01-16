@@ -48,6 +48,8 @@ pub fn init(
 
     const window = try core.windows.new(.{
         .title = "mmd",
+        .width = 1920,
+        .height = 1080,
     });
     renderer.window = window;
 
@@ -76,6 +78,9 @@ pub fn tick(
     var spawning = app.spawning;
     while (core.nextEvent()) |event| {
         switch (event) {
+            .mouse_scroll => |ev| {
+                renderer.zoom += ev.yoffset * 0.01;
+            },
             .key_press => |ev| {
                 switch (ev.key) {
                     .left => direction.v[0] -= 1,
