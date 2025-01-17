@@ -45,7 +45,7 @@ zoom: f32 = 1.0,
 
 // Flocking behavior constants
 const CLOSE_DISTANCE: f32 = 60.0; // Minimum desired distance between objects
-const PLAYER_AVOID_MULTIPLIER: f32 = 4.0; // How much further objects stay from player vs other objects
+const PLAYER_AVOID_MULTIPLIER: f32 = 10.0; // How much further objects stay from player vs other objects
 const PLAYER_AVOID_FORCE: f32 = 40.0; // How strongly objects avoid the player
 const BASE_MOVE_SPEED: f32 = 100.0; // Base movement speed for all behaviors
 const AVOIDANCE_WEIGHT: f32 = 0.9; // How strongly avoidance forces are applied
@@ -211,7 +211,7 @@ fn update(self: *App) !void {
     }
 
     // Mark one child at a time as deleteable if deleting is true
-    const mark_delete_cooldown: f32 = 1.0 / 10.0;
+    const mark_delete_cooldown: f32 = 1.0 / 50.0;
     if (deleting and current_time - self.last_mark_delete_time > mark_delete_cooldown) {
         self.last_mark_delete_time = current_time;
         // iterate over children and mark the first one valid as deleteable
@@ -327,4 +327,5 @@ fn render(self: *App) void {
     ray.drawText(player_coords.ptr, 10, 70, 20, ray.WHITE);
     ray.drawText(spawn_text.ptr, 10, 30, 20, ray.WHITE);
     ray.drawText(children_text.ptr, 10, 50, 20, ray.WHITE);
+    ray.drawText("Controls: Arrow keys to move, hold space to spawn, hold R to delete", 10, 100, 20, ray.WHITE);
 }
