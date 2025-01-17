@@ -68,13 +68,20 @@ pub const Renderer = struct {
             );
             defer std.heap.page_allocator.free(marking_delete_text);
 
+            var next_y: i32 = 30;
+
             ray.drawFPS(10, 10);
-            ray.drawText(player_coords.ptr, 10, 70, 20, ray.WHITE);
-            ray.drawText(spawn_text.ptr, 10, 30, 20, ray.WHITE);
-            ray.drawText(children_text.ptr, 10, 50, 20, ray.WHITE);
-            ray.drawText(delete_text.ptr, 10, 90, 20, ray.WHITE);
-            ray.drawText(marking_delete_text.ptr, 10, 110, 20, ray.WHITE);
-            ray.drawText("Controls: Arrow keys to move, hold space to spawn, hold R to delete", 10, 130, 20, ray.WHITE);
+            ray.drawText(player_coords.ptr, 10, next_y, 20, ray.WHITE);
+            next_y += 20;
+            ray.drawText(children_text.ptr, 10, next_y, 20, ray.WHITE);
+            next_y += 20;
+            ray.drawText(spawn_text.ptr, 10, next_y, 20, ray.WHITE);
+            next_y += 20;
+            ray.drawText(marking_delete_text.ptr, 10, next_y, 20, ray.WHITE);
+            next_y += 20;
+            ray.drawText(delete_text.ptr, 10, next_y, 20, ray.WHITE);
+            next_y += 20;
+            ray.drawText("Controls: Arrow keys to move, hold space to spawn, hold R to delete", 10, next_y, 20, ray.WHITE);
         }
     }
 };
