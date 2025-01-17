@@ -79,7 +79,7 @@ pub fn tick(
     while (core.nextEvent()) |event| {
         switch (event) {
             .mouse_scroll => |ev| {
-                renderer.zoom += ev.yoffset * 0.01;
+                renderer.zoom = math.clamp(renderer.zoom + ev.yoffset * 0.01, 0.01, 10);
             },
             .key_press => |ev| {
                 switch (ev.key) {
