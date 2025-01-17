@@ -1,6 +1,6 @@
 # MMD
 
-Mach Multiplayer Demo
+Mini Multiplayer Demo
 
 ## Setup
 
@@ -8,7 +8,7 @@ Mach Multiplayer Demo
   - Put it in your path, `~/.local/bin` is a good place on macOS
 
 ```sh
-# we use zigup to install this zig version, required by mach, the zig game engine
+# we use zigup to install this zig version
 zigup 0.14.0-dev.2577+271452d22
 ```
 
@@ -20,6 +20,5 @@ zig build run
 
 ## Details
 
-- [mach](https://github.com/hexops/mach)
-- Based on [custom renderer example](https://github.com/hexops/mach/tree/main/examples/custom-renderer)
+- [raylib](https://github.com/raysan5/raylib)
 - Build setup based on `zig init` and [random build help post](https://ziggit.dev/t/importing-zig-dependencies/4230/5)
