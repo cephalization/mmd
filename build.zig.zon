@@ -27,6 +27,10 @@
             .url = "git+https://github.com/raysan5/raylib.git?ref=master#7c7b087efb8c3c753eea3ff95a2afe309bf1ee54",
             .hash = "1220af2aa71cc9a2384244e027f7dea21f30a14943eeefc821f406eb0da35e2ae4e8",
         },
+        .perlin = .{
+            .url = "git+https://github.com/mgord9518/perlin-zig.git?ref=main#73a69cdd2a42483a2138aed9725e61791d07b58d",
+            .hash = "12208b3a835f168e660e826f82d36a2b0ff3a1060fdeebd2b238bf2bd24a8d1faaff",
+        },
     },
     .paths = .{
         "src",

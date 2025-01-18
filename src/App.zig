@@ -13,7 +13,7 @@ const WINDOW_HEIGHT = 1080;
 
 pub fn init() !App {
     ray.init(WINDOW_WIDTH, WINDOW_HEIGHT, "mmd");
-    ray.setTargetFPS(120);
+    ray.setTargetFPS(999);
     return App{
         .game_state = try State.GameState.init(),
         .renderer = Renderer.Renderer.init(),

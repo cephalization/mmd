@@ -133,6 +133,7 @@ pub const getFrameTime = c.GetFrameTime;
 pub const getTime = c.GetTime;
 pub const getMousePosition = c.GetMousePosition;
 pub const isMouseButtonDown = c.IsMouseButtonDown;
+pub const getMouseWheelMove = c.GetMouseWheelMove;
 
 pub fn isKeyUp(key: KeyboardKey) bool {
     return c.IsKeyUp(@intFromEnum(key));
@@ -149,3 +150,16 @@ pub fn isKeyPressed(key: KeyboardKey) bool {
 pub const drawText = c.DrawText;
 pub const drawRectangle = c.DrawRectangle;
 pub const drawCircle = c.DrawCircle;
+
+pub extern fn DrawLineEx(startPos: Vector2, endPos: Vector2, thick: f32, color: Color) void;
+pub fn drawLineEx(startPos: Vector2, endPos: Vector2, thick: f32, color: Color) void {
+    return DrawLineEx(startPos, endPos, thick, color);
+}
+
+// Simple value noise function
+pub fn valueNoise(x: f32, y: f32, offset: Vector2) f32 {
+    // Hash the coordinates to get a pseudo-random value
+    const h = @sin(x + offset.x) * 43758.5453123 +
+        @sin(y + offset.y) * 23421.6312231;
+    return @sin(h) * 0.5 + 0.5; // normalize to [0,1]
+}

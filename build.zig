@@ -10,9 +10,20 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Get perlin noise dependency
+    const perlin_dep = b.dependency("perlin", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Create raylib module
     const raylib_module = b.addModule("raylib", .{
         .root_source_file = .{ .cwd_relative = "src/raylib.zig" },
+    });
+
+    // Create perlin module
+    const perlin_module = b.addModule("perlin", .{
+        .root_source_file = perlin_dep.path("lib/perlin.zig"),
     });
 
     const exe = b.addExecutable(.{
@@ -29,6 +40,7 @@ pub fn build(b: *std.Build) void {
     // Add raylib include path
     exe.addIncludePath(raylib_dep.path("src"));
     exe.root_module.addImport("raylib", raylib_module);
+    exe.root_module.addImport("perlin", perlin_module);
 
     // This declares intent for the executable to be installed
     b.installArtifact(exe);
