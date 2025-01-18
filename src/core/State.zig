@@ -4,11 +4,11 @@ const Entity = @import("Entity.zig");
 const Input = @import("Input.zig");
 
 // Flocking behavior constants
-pub const CLOSE_DISTANCE: f32 = 60.0; // Minimum desired distance between objects
+pub const CLOSE_DISTANCE: f32 = 31.0; // Minimum desired distance between objects
 pub const PLAYER_AVOID_MULTIPLIER: f32 = 10.0; // How much further objects stay from player vs other objects
-pub const PLAYER_AVOID_FORCE: f32 = 40.0; // How strongly objects avoid the player
+pub const PLAYER_AVOID_FORCE: f32 = 30.0; // How strongly objects avoid the player
 pub const BASE_MOVE_SPEED: f32 = 100.0; // Base movement speed for all behaviors
-pub const AVOIDANCE_WEIGHT: f32 = 0.9; // How strongly avoidance forces are applied
+pub const AVOIDANCE_WEIGHT: f32 = 0.5; // How strongly avoidance forces are applied
 pub const ATTRACTION_WEIGHT: f32 = 0.005; // How strongly objects are attracted to player
 pub const MIN_DISTANCE: f32 = 0.001; // Minimum distance to prevent division by zero
 

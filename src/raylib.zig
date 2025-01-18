@@ -6,6 +6,8 @@ pub const c = @cImport({
 
 // Re-export Window related types
 pub const getWindowHandle = c.GetWindowHandle;
+pub const getScreenWidth = c.GetScreenWidth;
+pub const getScreenHeight = c.GetScreenHeight;
 
 // Re-export common types and constants with more Zig-friendly names
 pub const Color = c.Color;
@@ -106,7 +108,9 @@ pub const KeyboardKey = enum(c_int) {
     KEY_KP_9 = 329,
 };
 
-pub const MouseButton = c.MouseButton;
+pub const MOUSE_BUTTON = c.MouseButton;
+pub const MOUSE_BUTTON_LEFT = c.MOUSE_BUTTON_LEFT;
+pub const MOUSE_BUTTON_RIGHT = c.MOUSE_BUTTON_RIGHT;
 
 // Common colors
 pub const RAYWHITE = c.RAYWHITE;
@@ -127,6 +131,9 @@ pub const drawFPS = c.DrawFPS;
 pub const setTargetFPS = c.SetTargetFPS;
 pub const getFrameTime = c.GetFrameTime;
 pub const getTime = c.GetTime;
+pub const getMousePosition = c.GetMousePosition;
+pub const isMouseButtonDown = c.IsMouseButtonDown;
+
 pub fn isKeyUp(key: KeyboardKey) bool {
     return c.IsKeyUp(@intFromEnum(key));
 }
