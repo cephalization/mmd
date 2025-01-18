@@ -8,10 +8,15 @@ const App = @This();
 game_state: State.GameState,
 renderer: Renderer.Renderer,
 
+const WINDOW_WIDTH = 1920;
+const WINDOW_HEIGHT = 1080;
+
 pub fn init() !App {
+    ray.init(WINDOW_WIDTH, WINDOW_HEIGHT, "mmd");
+    ray.setTargetFPS(120);
     return App{
         .game_state = try State.GameState.init(),
-        .renderer = undefined,
+        .renderer = Renderer.Renderer.init(),
     };
 }
 
@@ -21,11 +26,6 @@ pub fn deinit(self: *App) void {
 }
 
 pub fn run(self: *App) !void {
-    ray.init(1920, 1080, "mmd");
-    ray.setTargetFPS(120);
-
-    self.renderer = Renderer.Renderer.init();
-
     while (!ray.shouldClose()) {
         try self.update();
         try self.renderer.update();

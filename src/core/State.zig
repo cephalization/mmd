@@ -38,9 +38,12 @@ pub const GameState = struct {
             .is_marking_delete = false,
         };
 
+        const window_width = ray.getScreenWidth();
+        const window_height = ray.getScreenHeight();
+
         // Create player entity
         const player_entity = Entity.Entity{
-            .position = .{ .x = 960, .y = 540 },
+            .position = .{ .x = @divTrunc(@as(f32, @floatFromInt(window_width)), 2), .y = @divTrunc(@as(f32, @floatFromInt(window_height)), 2) },
             .scale = 1.0,
             .deleteable = 0,
         };
