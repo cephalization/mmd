@@ -3,6 +3,7 @@ const State = @import("../State.zig");
 const Protocol = @import("Protocol.zig");
 const Input = @import("../Input.zig");
 const network = @import("network");
+const Constants = @import("Constants.zig");
 
 const Client = struct {
     id: u64,
@@ -18,7 +19,7 @@ const NetworkThread = struct {
     should_stop: std.atomic.Value(bool),
 
     fn run(self: *NetworkThread) !void {
-        var buf: [4096]u8 = undefined;
+        var buf: [Constants.MAX_PACKET_SIZE]u8 = undefined;
 
         while (!self.should_stop.load(.acquire)) {
             const receive_result = self.socket.receiveFrom(&buf) catch |err| {
@@ -260,7 +261,7 @@ pub const GameServer = struct {
         // Convert entities to network format
         var network_entities = std.ArrayList(Protocol.NetworkEntity).init(self.allocator);
         defer network_entities.deinit();
-        errdefer network_entities.deinit();
+
         // Ensure we have enough capacity for all entities
         try network_entities.ensureTotalCapacity(self.game_state.entity_manager.entities.len);
 
@@ -283,7 +284,6 @@ pub const GameServer = struct {
         // Convert relationships to network format
         var network_relationships = std.ArrayList(Protocol.NetworkRelationship).init(self.allocator);
         defer network_relationships.deinit();
-        errdefer network_relationships.deinit();
 
         // Ensure we have enough capacity for all relationships
         try network_relationships.ensureTotalCapacity(self.game_state.entity_manager.relationships.items.len);

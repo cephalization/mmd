@@ -4,6 +4,7 @@ const Protocol = @import("Protocol.zig");
 const Input = @import("../Input.zig");
 const network = @import("network");
 const ray = @import("../../raylib.zig");
+const Constants = @import("Constants.zig");
 
 pub const GameMode = enum {
     singleplayer,
@@ -24,7 +25,7 @@ const NetworkThread = struct {
     should_stop: std.atomic.Value(bool),
 
     fn run(self: *NetworkThread) !void {
-        var buf: [4096]u8 = undefined;
+        var buf: [Constants.MAX_PACKET_SIZE]u8 = undefined;
 
         while (!self.should_stop.load(.acquire)) {
             const receive_result = self.socket.receiveFrom(&buf) catch |err| {
@@ -265,42 +266,15 @@ pub const GameClient = struct {
                 const state_update = message.payload.state_update;
                 const current_time = ray.getTime();
 
-                // Ensure we have enough capacity for all entities
-                while (self.game_state.entity_manager.entities.len < state_update.entities.len) {
-                    try self.game_state.entity_manager.entities.append(self.allocator, .{
-                        .position = .{ .x = 0, .y = 0 },
-                        .scale = 1.0,
-                        .deleteable = 0,
-                        .entity_type = .player,
-                    });
+                // Handle entities
+                const same_size = self.game_state.entity_manager.entities.len == state_update.entities.len;
+                if (!same_size) {
+                    // If size differs, resize the list
+                    try self.game_state.entity_manager.entities.resize(self.allocator, state_update.entities.len);
                 }
 
-                // Update entity positions and properties
+                // Copy all entity data directly
                 for (state_update.entities, 0..) |entity, i| {
-                    // Only interpolate our own player's position if we've moved recently
-                    if (self.player_entity_id) |player_id| {
-                        if (i == player_id) {
-                            const time_since_input = current_time - self.last_input_time;
-                            // Always interpolate, but use a faster lerp when input is recent
-                            const current_pos = self.game_state.entity_manager.entities.items(.position)[i];
-                            const server_pos = .{ .x = entity.position.x, .y = entity.position.y };
-
-                            std.debug.print("Player {}: Current pos: ({d:.2}, {d:.2}), Server pos: ({d:.2}, {d:.2})\n", .{ player_id, current_pos.x, current_pos.y, server_pos.x, server_pos.y });
-
-                            // Use a faster lerp factor when input is recent
-                            const base_lerp: f32 = 0.3;
-                            const input_bonus: f32 = if (time_since_input < 0.033) @as(f32, 0.2) else @as(f32, 0.0);
-                            const lerp_factor: f32 = base_lerp + input_bonus;
-
-                            self.game_state.entity_manager.entities.items(.position)[i] = .{
-                                .x = current_pos.x + (server_pos.x - current_pos.x) * lerp_factor,
-                                .y = current_pos.y + (server_pos.y - current_pos.y) * lerp_factor,
-                            };
-                            continue;
-                        }
-                    }
-
-                    // For other entities, just apply the position directly
                     self.game_state.entity_manager.entities.items(.position)[i] = .{ .x = entity.position.x, .y = entity.position.y };
                     self.game_state.entity_manager.entities.items(.scale)[i] = entity.scale;
                     self.game_state.entity_manager.entities.items(.deleteable)[i] = entity.deleteable;
@@ -308,29 +282,33 @@ pub const GameClient = struct {
                     self.game_state.entity_manager.entities.items(.active)[i] = entity.active;
                 }
 
-                // Update last state update time BEFORE trimming entities
+                // Clear and recreate all relationships
+                for (self.game_state.entity_manager.relationships.items) |*rel| {
+                    rel.children.deinit();
+                }
+                self.game_state.entity_manager.relationships.clearRetainingCapacity();
+
+                // Add new relationships
+                try self.game_state.entity_manager.relationships.ensureTotalCapacity(state_update.relationships.len);
+                for (state_update.relationships) |relationship| {
+                    if (relationship.parent_id) |parent_id| {
+                        if (parent_id >= state_update.entities.len) continue;
+
+                        var new_rel = try self.game_state.entity_manager.relationships.addOne();
+                        new_rel.* = .{
+                            .parent_id = relationship.parent_id,
+                            .children = std.ArrayList(usize).init(self.allocator),
+                            .allocator = self.allocator,
+                        };
+
+                        try new_rel.children.appendSlice(relationship.children);
+                    }
+                }
+
+                // Update last state update time
                 self.last_state_update = current_time;
 
-                // Trim any excess entities
-                if (self.game_state.entity_manager.entities.len > state_update.entities.len) {
-                    self.game_state.entity_manager.entities.resize(self.allocator, state_update.entities.len) catch |err| {
-                        std.debug.print("Warning: Failed to trim excess entities: {}\n", .{err});
-                    };
-                }
-
-                // Update relationships
-                self.game_state.entity_manager.relationships.clearRetainingCapacity();
-                for (state_update.relationships) |relationship| {
-                    var new_rel = try self.game_state.entity_manager.relationships.addOne();
-                    new_rel.* = .{
-                        .parent_id = relationship.parent_id,
-                        .children = std.ArrayList(usize).init(self.allocator),
-                        .allocator = self.allocator,
-                    };
-                    try new_rel.children.appendSlice(relationship.children);
-                }
-
-                // Update player ID if we have one and the entity exists
+                // Update player ID if we have one
                 if (self.player_entity_id) |id| {
                     if (id < self.game_state.entity_manager.entities.len) {
                         self.game_state.player_id = id;
