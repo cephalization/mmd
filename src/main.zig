@@ -4,8 +4,10 @@ const App = @import("App.zig");
 const network = @import("core/network/Client.zig");
 const Server = @import("core/network/Server.zig");
 
-const WINDOW_WIDTH = 640;
-const WINDOW_HEIGHT = 480;
+const WINDOW_WIDTH = 1280;
+const WINDOW_HEIGHT = 720;
+// const WINDOW_WIDTH = 640;
+// const WINDOW_HEIGHT = 480;
 
 pub fn main() !void {
     // Initialize allocator

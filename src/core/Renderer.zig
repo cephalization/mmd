@@ -13,7 +13,7 @@ const MAX_CHILD_SCALE = 1.0;
 const UI_PADDING = 30;
 const GRID_SIZE: f32 = 100.0; // Size of each grid cell
 const GRID_COLOR = ray.Color{ .r = 40, .g = 40, .b = 40, .a = 255 }; // Dark gray grid
-const NOISE_SCALE: f32 = 0.001; // Scale factor for noise coordinates
+const BASE_NOISE_SCALE: f32 = 0.001; // Base scale factor for noise coordinates
 const NOISE_THRESHOLD: f32 = 0.0; // Threshold for filling squares
 const FILL_COLOR = ray.Color{ .r = 30, .g = 30, .b = 50, .a = 255 }; // Dark blue-ish fill
 
@@ -204,6 +204,13 @@ pub const Renderer = struct {
         const start_y = @floor(top_left.y / GRID_SIZE) * GRID_SIZE;
         const end_y = @ceil(bottom_right.y / GRID_SIZE) * GRID_SIZE;
 
+        // Scale noise based on zoom level
+        const noise_scale = BASE_NOISE_SCALE * (1.0 / self.camera.zoom);
+
+        // Scale noise offset inversely with zoom to maintain world position
+        const scaled_offset_x = self.noise_offset.x / self.camera.zoom;
+        const scaled_offset_y = self.noise_offset.y / self.camera.zoom;
+
         // Draw grid squares with noise
         var y = start_y;
         while (y <= end_y) : (y += GRID_SIZE) {
@@ -212,7 +219,7 @@ pub const Renderer = struct {
                 // Get noise value for this grid cell
                 const center_x = x + GRID_SIZE * 0.5;
                 const center_y = y + GRID_SIZE * 0.5;
-                const noise = fbm((center_x + self.noise_offset.x) * NOISE_SCALE, (center_y + self.noise_offset.y) * NOISE_SCALE, 0);
+                const noise = fbm((center_x + scaled_offset_x) * noise_scale, (center_y + scaled_offset_y) * noise_scale, 0);
 
                 // If noise is above threshold, fill the square
                 if (noise > NOISE_THRESHOLD) {
