@@ -129,19 +129,16 @@ pub const Renderer = struct {
         ray.drawText("Controls: Arrow keys to move, hold space to spawn, hold R to delete", 10, next_y, 20, ray.WHITE);
     }
 
-    pub fn renderUI(self: *Renderer, game_state: *State.GameState) !void {
-        const player = game_state.entity_manager.getActiveEntity(game_state.player_id).?;
-        const active_children = game_state.entity_manager.getActiveChildren(game_state.player_id);
-
-        // Draw debug sliders
-        self.player_scale_slider.setValue(player.scale);
-        self.player_scale_slider.drawAndUpdate();
-        game_state.entity_manager.entities.items(.scale)[game_state.player_id] = self.player_scale_slider.getValue();
-
-        self.child_scale_slider.drawAndUpdate();
-        self.child_scale_slider_value = self.child_scale_slider.getValue();
-        // Draw debug text
-        try drawDebugText(game_state, player, active_children);
+    pub fn renderUI(game_state: *const State.GameState) !void {
+        if (game_state.entity_manager.getActiveEntity(game_state.player_id)) |player| {
+            // Render player info
+            const player_pos = player.position;
+            const text = try std.fmt.allocPrint(std.heap.page_allocator, "Player Pos: ({d:.2}, {d:.2})", .{ player_pos.x, player_pos.y });
+            defer std.heap.page_allocator.free(text);
+            ray.drawText(text.ptr, 10, 10, 20, ray.WHITE);
+        } else {
+            ray.drawText("Connecting...", 10, 10, 20, ray.WHITE);
+        }
     }
 
     pub fn toggleUI(self: *Renderer) void {
@@ -274,45 +271,43 @@ pub const Renderer = struct {
         // Draw world grid
         self.drawWorldGrid();
 
-        // Draw player
-        if (game_state.entity_manager.getActiveEntity(game_state.player_id)) |player| {
-            const screen_pos = self.camera.worldToScreen(player.position);
-            const screen_radius = 20 * player.scale * self.camera.zoom;
+        // Draw all entities
+        const entities = game_state.entity_manager.entities.slice();
+        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), 0..) |pos, scale, deleteable, entity_type, id| {
+            if (!game_state.entity_manager.isActive(id)) continue;
 
-            if (self.camera.isInView(player.position, 20 * player.scale)) {
-                ray.drawCircle(
-                    @as(i32, @intFromFloat(screen_pos.x)),
-                    @as(i32, @intFromFloat(screen_pos.y)),
-                    screen_radius,
-                    ray.WHITE,
-                );
+            const base_radius: f32 = switch (entity_type) {
+                .player => 20.0,
+                .child => 18.0,
+            };
+            const screen_radius = base_radius * scale * self.camera.zoom;
+
+            // Only draw if in view
+            if (!self.camera.isInView(pos, base_radius * scale)) continue;
+
+            const screen_pos = self.camera.worldToScreen(pos);
+
+            // Determine color based on entity type and state
+            const color = switch (entity_type) {
+                .player => ray.WHITE,
+                .child => if (deleteable > 0) ray.RED else ray.BLUE,
+            };
+
+            // For children, use the slider value for scale
+            if (entity_type == .child) {
+                game_state.entity_manager.entities.items(.scale)[id] = self.child_scale_slider_value;
             }
 
-            // Draw children
-            const active_children = game_state.entity_manager.getActiveChildren(game_state.player_id);
-            for (active_children) |child_id| {
-                const child_pos = game_state.entity_manager.entities.items(.position)[child_id];
-                game_state.entity_manager.entities.items(.scale)[child_id] = self.child_scale_slider_value;
-                const child_scale = game_state.entity_manager.entities.items(.scale)[child_id];
-                const child_radius = 18 * child_scale;
-
-                if (self.camera.isInView(child_pos, child_radius)) {
-                    const screen_child_pos = self.camera.worldToScreen(child_pos);
-                    const screen_child_radius = child_radius * self.camera.zoom;
-                    const color = if (game_state.entity_manager.entities.items(.deleteable)[child_id] > 0) ray.RED else ray.BLUE;
-
-                    ray.drawCircle(
-                        @as(i32, @intFromFloat(screen_child_pos.x)),
-                        @as(i32, @intFromFloat(screen_child_pos.y)),
-                        screen_child_radius,
-                        color,
-                    );
-                }
-            }
+            ray.drawCircle(
+                @as(i32, @intFromFloat(screen_pos.x)),
+                @as(i32, @intFromFloat(screen_pos.y)),
+                screen_radius,
+                color,
+            );
         }
 
         if (self.ui_visible) {
-            try renderUI(self, game_state);
+            try renderUI(game_state);
         }
     }
 };

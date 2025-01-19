@@ -23,10 +23,11 @@ pub const GameState = struct {
     is_spawning: bool,
     is_deleting: bool,
     is_marking_delete: bool,
+    allocator: std.mem.Allocator,
 
-    pub fn init() !GameState {
+    pub fn init(allocator: std.mem.Allocator, create_player: bool) !GameState {
         var state = GameState{
-            .entity_manager = Entity.EntityManager.init(),
+            .entity_manager = Entity.EntityManager.init(allocator),
             .input_manager = Input.InputManager.init(),
             .player_id = 0,
             .last_spawn_time = 0,
@@ -36,18 +37,22 @@ pub const GameState = struct {
             .is_spawning = false,
             .is_deleting = false,
             .is_marking_delete = false,
+            .allocator = allocator,
         };
 
-        const window_width = ray.getScreenWidth();
-        const window_height = ray.getScreenHeight();
+        if (create_player) {
+            const window_width = ray.getScreenWidth();
+            const window_height = ray.getScreenHeight();
 
-        // Create player entity
-        const player_entity = Entity.Entity{
-            .position = .{ .x = @divTrunc(@as(f32, @floatFromInt(window_width)), 2), .y = @divTrunc(@as(f32, @floatFromInt(window_height)), 2) },
-            .scale = 1.0,
-            .deleteable = 0,
-        };
-        state.player_id = try state.entity_manager.createEntity(player_entity, null);
+            // Create player entity
+            const player_entity = Entity.Entity{
+                .position = .{ .x = @divTrunc(@as(f32, @floatFromInt(window_width)), 2), .y = @divTrunc(@as(f32, @floatFromInt(window_height)), 2) },
+                .scale = 1.0,
+                .deleteable = 0,
+                .entity_type = .player,
+            };
+            state.player_id = try state.entity_manager.createEntity(player_entity, null);
+        }
 
         return state;
     }
@@ -73,8 +78,13 @@ pub const GameState = struct {
                 .movement => |mov| {
                     // Update player position
                     const speed: f32 = 100.0;
-                    self.entity_manager.entities.items(.position)[self.player_id].x += mov.x * speed * delta_time;
-                    self.entity_manager.entities.items(.position)[self.player_id].y += mov.y * speed * delta_time;
+                    const target_player_id = if (event.source == .local) self.player_id else event.source_player_id;
+                    if (target_player_id >= self.entity_manager.entities.len) {
+                        std.debug.print("Warning: Invalid player_id {}, entities length {}\n", .{ target_player_id, self.entity_manager.entities.len });
+                        continue;
+                    }
+                    self.entity_manager.entities.items(.position)[target_player_id].x += mov.x * speed * delta_time;
+                    self.entity_manager.entities.items(.position)[target_player_id].y += mov.y * speed * delta_time;
                 },
                 .spawn => |is_spawning| {
                     if (is_spawning) {
@@ -171,6 +181,7 @@ pub const GameState = struct {
                     .position = new_position,
                     .scale = 1.0 / 6.0,
                     .deleteable = 0,
+                    .entity_type = .child,
                 };
                 _ = try self.entity_manager.createEntity(new_entity, self.player_id);
             }
@@ -229,5 +240,35 @@ pub const GameState = struct {
                 child_pos.y += to_player_y * attract_speed;
             }
         }
+    }
+
+    pub fn createPlayerEntity(self: *GameState) !usize {
+        // Create a new entity for the player
+        const window_width = ray.getScreenWidth();
+        const window_height = ray.getScreenHeight();
+        const center_x = @divTrunc(@as(f32, @floatFromInt(window_width)), 2);
+        const center_y = @divTrunc(@as(f32, @floatFromInt(window_height)), 2);
+
+        // Generate random angle and radius for position within circle
+        const random_angle = @as(f32, @floatFromInt(ray.getRandomValue(0, 360))) * std.math.pi / 180.0;
+        const random_radius = @as(f32, @floatFromInt(ray.getRandomValue(0, 10)));
+
+        const player_entity = Entity.Entity{
+            .position = .{
+                .x = center_x + random_radius * @cos(random_angle),
+                .y = center_y + random_radius * @sin(random_angle),
+            },
+            .scale = 1.0,
+            .deleteable = 0,
+            .entity_type = .player,
+        };
+
+        return try self.entity_manager.createEntity(player_entity, null);
+    }
+
+    fn handleInputEvent(self: *GameState, event: Input.InputEvent) !void {
+        // Handle input events
+        _ = self;
+        _ = event;
     }
 };

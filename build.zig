@@ -33,6 +33,9 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Link cross platform network module
+    exe.root_module.addImport("network", b.dependency("network", .{}).module("network"));
+
     // Link with raylib
     exe.linkLibrary(raylib_dep.artifact("raylib"));
     exe.linkLibC();

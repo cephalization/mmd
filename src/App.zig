@@ -2,40 +2,39 @@ const std = @import("std");
 const ray = @import("raylib.zig");
 const State = @import("core/State.zig");
 const Renderer = @import("core/Renderer.zig");
+const network = @import("core/network/Client.zig");
 
-const App = @This();
+pub const App = struct {
+    allocator: std.mem.Allocator,
+    client: network.GameClient,
+    renderer: Renderer.Renderer,
 
-game_state: State.GameState,
-renderer: Renderer.Renderer,
-
-const WINDOW_WIDTH = 1920;
-const WINDOW_HEIGHT = 1080;
-
-pub fn init() !App {
-    ray.init(WINDOW_WIDTH, WINDOW_HEIGHT, "mmd");
-    ray.setTargetFPS(999);
-    return App{
-        .game_state = try State.GameState.init(),
-        .renderer = Renderer.Renderer.init(),
-    };
-}
-
-pub fn deinit(self: *App) void {
-    self.game_state.deinit();
-    self.renderer.deinit();
-}
-
-pub fn run(self: *App) !void {
-    while (!ray.shouldClose()) {
-        try self.update();
-        try self.renderer.update();
-        try self.renderer.render(&self.game_state);
+    pub fn init(allocator: std.mem.Allocator, mode: network.GameMode) !App {
+        return App{
+            .allocator = allocator,
+            .client = try network.GameClient.init(allocator, mode),
+            .renderer = Renderer.Renderer.init(),
+        };
     }
 
-    ray.close();
-}
+    pub fn deinit(self: *App) void {
+        self.client.deinit();
+        self.renderer.deinit();
+    }
 
-fn update(self: *App) !void {
-    const delta_time = ray.getFrameTime();
-    try self.game_state.update(delta_time);
-}
+    pub fn connectToServer(self: *App, host: []const u8, port: u16) !void {
+        try self.client.connectToServer(host, port);
+    }
+
+    pub fn update(self: *App) !void {
+        const delta_time = ray.getFrameTime();
+        try self.client.update(delta_time);
+        std.debug.print("Client update complete\n", .{});
+        try self.renderer.update();
+        std.debug.print("Renderer update complete\n", .{});
+    }
+
+    pub fn render(self: *App) !void {
+        try self.renderer.render(&self.client.game_state);
+    }
+};

@@ -135,6 +135,9 @@ pub const getMousePosition = c.GetMousePosition;
 pub const isMouseButtonDown = c.IsMouseButtonDown;
 pub const getMouseWheelMove = c.GetMouseWheelMove;
 
+// Math
+pub const getRandomValue = c.GetRandomValue;
+
 pub fn isKeyUp(key: KeyboardKey) bool {
     return c.IsKeyUp(@intFromEnum(key));
 }

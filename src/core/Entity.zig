@@ -1,12 +1,18 @@
 const std = @import("std");
 const ray = @import("../raylib.zig");
 
+pub const EntityType = enum {
+    player,
+    child,
+};
+
 pub const Entity = struct {
     position: ray.Vector2,
     scale: f32,
     // time marked for deletion or 0 if not marked
     deleteable: f64,
     active: bool = true,
+    entity_type: EntityType,
 };
 
 pub const EntityList = std.MultiArrayList(Entity);
@@ -15,11 +21,13 @@ pub const EntityList = std.MultiArrayList(Entity);
 pub const Relationships = struct {
     parent_id: ?usize,
     children: std.ArrayList(usize),
+    allocator: std.mem.Allocator,
 
-    pub fn init(parent: ?usize) Relationships {
+    pub fn init(parent: ?usize, allocator: std.mem.Allocator) Relationships {
         return .{
             .parent_id = parent,
-            .children = std.ArrayList(usize).init(std.heap.page_allocator),
+            .children = std.ArrayList(usize).init(allocator),
+            .allocator = allocator,
         };
     }
 
@@ -32,12 +40,14 @@ pub const EntityManager = struct {
     entities: EntityList,
     relationships: std.ArrayList(Relationships),
     free_slots: std.ArrayList(usize),
+    allocator: std.mem.Allocator,
 
-    pub fn init() EntityManager {
+    pub fn init(allocator: std.mem.Allocator) EntityManager {
         return .{
             .entities = EntityList{},
-            .relationships = std.ArrayList(Relationships).init(std.heap.page_allocator),
-            .free_slots = std.ArrayList(usize).init(std.heap.page_allocator),
+            .relationships = std.ArrayList(Relationships).init(allocator),
+            .free_slots = std.ArrayList(usize).init(allocator),
+            .allocator = allocator,
         };
     }
 
@@ -47,7 +57,7 @@ pub const EntityManager = struct {
         }
         self.relationships.deinit();
         self.free_slots.deinit();
-        self.entities.deinit(std.heap.page_allocator);
+        self.entities.deinit(self.allocator);
     }
 
     pub fn createEntity(self: *EntityManager, entity: Entity, parent_id: ?usize) !usize {
@@ -59,10 +69,10 @@ pub const EntityManager = struct {
         if (self.free_slots.items.len > 0) {
             entity_id = self.free_slots.pop();
             self.entities.set(entity_id, new_entity);
-            self.relationships.items[entity_id] = Relationships.init(parent_id);
+            self.relationships.items[entity_id] = Relationships.init(parent_id, self.allocator);
         } else {
-            try self.entities.append(std.heap.page_allocator, new_entity);
-            try self.relationships.append(Relationships.init(parent_id));
+            try self.entities.append(self.allocator, new_entity);
+            try self.relationships.append(Relationships.init(parent_id, self.allocator));
             entity_id = self.entities.len - 1;
         }
 
@@ -89,7 +99,7 @@ pub const EntityManager = struct {
 
         // Clean up relationships
         rel.deinit();
-        rel.* = Relationships.init(null);
+        rel.* = Relationships.init(null, self.allocator);
 
         // Mark entity as inactive
         self.entities.items(.active)[entity_id] = false;
@@ -99,10 +109,20 @@ pub const EntityManager = struct {
     }
 
     // Helper function to get an entity only if it's active
-    pub fn getActiveEntity(self: *EntityManager, entity_id: usize) ?Entity {
+    pub fn getActiveEntity(self: *const EntityManager, entity_id: usize) ?Entity {
         if (entity_id >= self.entities.len) return null;
-        if (!self.entities.items(.active)[entity_id]) return null;
-        return self.entities.get(entity_id);
+
+        const pos = self.entities.items(.position)[entity_id];
+        const scale = self.entities.items(.scale)[entity_id];
+        const deleteable = self.entities.items(.deleteable)[entity_id];
+        const entity_type = self.entities.items(.entity_type)[entity_id];
+
+        return Entity{
+            .position = pos,
+            .scale = scale,
+            .deleteable = deleteable,
+            .entity_type = entity_type,
+        };
     }
 
     // Helper function to get a slice of active children for a parent
@@ -123,5 +143,16 @@ pub const EntityManager = struct {
     pub fn isActive(self: *EntityManager, entity_id: usize) bool {
         if (entity_id >= self.entities.len) return false;
         return self.entities.items(.active)[entity_id];
+    }
+
+    // Helper function to get all active player IDs
+    pub fn getActivePlayers(self: *const EntityManager) !std.ArrayList(usize) {
+        var players = std.ArrayList(usize).init(self.allocator);
+        for (self.entities.items(.active), self.entities.items(.entity_type), 0..) |active, entity_type, id| {
+            if (active and entity_type == .player) {
+                try players.append(id);
+            }
+        }
+        return players;
     }
 };

@@ -9,6 +9,7 @@ pub const InputSource = enum {
 pub const InputEvent = struct {
     source: InputSource,
     timestamp: f64,
+    source_player_id: usize = 0,
     data: union(enum) {
         movement: struct {
             x: f32,
@@ -28,6 +29,7 @@ pub const InputState = struct {
 pub const InputManager = struct {
     state: InputState,
     event_queue: std.ArrayList(InputEvent),
+    player_id: usize,
 
     pub fn init() InputManager {
         return .{
@@ -37,6 +39,7 @@ pub const InputManager = struct {
                 .marking_delete = false,
             },
             .event_queue = std.ArrayList(InputEvent).init(std.heap.page_allocator),
+            .player_id = 0,
         };
     }
 
@@ -78,6 +81,7 @@ pub const InputManager = struct {
             try self.event_queue.append(.{
                 .source = .local,
                 .timestamp = current_time,
+                .source_player_id = self.player_id,
                 .data = .{
                     .movement = .{
                         .x = new_direction.x,
@@ -95,6 +99,7 @@ pub const InputManager = struct {
             try self.event_queue.append(.{
                 .source = .local,
                 .timestamp = current_time,
+                .source_player_id = self.player_id,
                 .data = .{ .spawn = spawn_state },
             });
         }
@@ -112,6 +117,7 @@ pub const InputManager = struct {
             try self.event_queue.append(.{
                 .source = .local,
                 .timestamp = current_time,
+                .source_player_id = self.player_id,
                 .data = .{ .marking_delete = delete_state },
             });
         }
