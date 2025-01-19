@@ -207,10 +207,6 @@ pub const Renderer = struct {
         // Scale noise based on zoom level
         const noise_scale = BASE_NOISE_SCALE * (1.0 / self.camera.zoom);
 
-        // Scale noise offset inversely with zoom to maintain world position
-        const scaled_offset_x = self.noise_offset.x / self.camera.zoom;
-        const scaled_offset_y = self.noise_offset.y / self.camera.zoom;
-
         // Draw grid squares with noise
         var y = start_y;
         while (y <= end_y) : (y += GRID_SIZE) {
@@ -219,7 +215,11 @@ pub const Renderer = struct {
                 // Get noise value for this grid cell
                 const center_x = x + GRID_SIZE * 0.5;
                 const center_y = y + GRID_SIZE * 0.5;
-                const noise = fbm((center_x + scaled_offset_x) * noise_scale, (center_y + scaled_offset_y) * noise_scale, 0);
+
+                // Apply noise scale to both the coordinates and the offset together
+                const scaled_x = (center_x + self.noise_offset.x) * noise_scale;
+                const scaled_y = (center_y + self.noise_offset.y) * noise_scale;
+                const noise = fbm(scaled_x, scaled_y, 0);
 
                 // If noise is above threshold, fill the square
                 if (noise > NOISE_THRESHOLD) {

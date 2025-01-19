@@ -135,7 +135,7 @@ pub const GameServer = struct {
         std.debug.print("Server starting main loop\n", .{});
 
         var last_frame_time = std.time.nanoTimestamp();
-        const target_frame_time: i128 = std.time.ns_per_s / 60; // Target 60 FPS
+        const target_frame_time: i128 = std.time.ns_per_s / 120; // Target 120 FPS
 
         while (true) {
             const current_time = std.time.nanoTimestamp();
