@@ -4,8 +4,8 @@ const App = @import("App.zig");
 const network = @import("core/network/Client.zig");
 const Server = @import("core/network/Server.zig");
 
-const WINDOW_WIDTH = 1920;
-const WINDOW_HEIGHT = 1080;
+const WINDOW_WIDTH = 640;
+const WINDOW_HEIGHT = 480;
 
 pub fn main() !void {
     // Initialize allocator
@@ -25,6 +25,7 @@ pub fn main() !void {
     var is_server = false;
     var server_host: ?[]const u8 = null;
     var server_port: u16 = 7777; // Default port
+    var position: enum { left, right } = .left;
 
     // Parse arguments
     while (args.next()) |arg| {
@@ -45,6 +46,19 @@ pub fn main() !void {
                 std.debug.print("Error: --port requires a port number\n", .{});
                 return;
             }
+        } else if (std.mem.eql(u8, arg, "--position")) {
+            // parse --position into .left or .right
+            if (args.next()) |position_string| {
+                // if position_string == "left" set position to .left
+                if (std.mem.eql(u8, position_string, "left")) {
+                    position = .left;
+                } else if (std.mem.eql(u8, position_string, "right")) {
+                    position = .right;
+                } else {
+                    std.debug.print("Error: --position requires a valid position\n", .{});
+                    return;
+                }
+            }
         }
     }
 
@@ -57,6 +71,12 @@ pub fn main() !void {
         // Run as client (either singleplayer or multiplayer)
         ray.init(WINDOW_WIDTH, WINDOW_HEIGHT, "mmd");
         ray.setTargetFPS(999);
+        if (position == .left) {
+            ray.setWindowPosition(0, 0);
+        } else if (position == .right) {
+            const monitor_width = ray.getMonitorWidth(0);
+            ray.setWindowPosition(monitor_width - WINDOW_WIDTH, 0);
+        }
         defer ray.close();
 
         var app = try App.App.init(allocator, mode);

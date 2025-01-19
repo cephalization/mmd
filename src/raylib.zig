@@ -8,6 +8,9 @@ pub const c = @cImport({
 pub const getWindowHandle = c.GetWindowHandle;
 pub const getScreenWidth = c.GetScreenWidth;
 pub const getScreenHeight = c.GetScreenHeight;
+pub const setWindowPosition = c.SetWindowPosition;
+pub const getMonitorWidth = c.GetMonitorWidth;
+pub const getMonitorHeight = c.GetMonitorHeight;
 
 // Re-export common types and constants with more Zig-friendly names
 pub const Color = c.Color;

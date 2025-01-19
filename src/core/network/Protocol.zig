@@ -19,6 +19,7 @@ pub const NetworkEntity = struct {
     scale: f32,
     deleteable: f64,
     entity_type: Entity.EntityType,
+    active: bool,
 };
 
 // Network-friendly version of EntityRelationship

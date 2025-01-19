@@ -50,34 +50,33 @@ pub const InputManager = struct {
     pub fn pollLocalInput(self: *InputManager) !void {
         const current_time = ray.getTime();
 
-        // Handle movement input with friction
-        var new_direction = self.state.direction;
-        const friction = 0.79;
-        new_direction.x *= friction;
-        new_direction.y *= friction;
+        // Handle movement input
+        var new_direction = ray.Vector2{ .x = 0, .y = 0 };
 
-        var movement_changed = false;
-        if (ray.isKeyDown(ray.KeyboardKey.KEY_LEFT)) {
-            new_direction.x -= 1;
-            movement_changed = true;
-        }
-        if (ray.isKeyDown(ray.KeyboardKey.KEY_RIGHT)) {
-            new_direction.x += 1;
-            movement_changed = true;
-        }
-        if (ray.isKeyDown(ray.KeyboardKey.KEY_UP)) {
-            new_direction.y -= 1;
-            movement_changed = true;
-        }
-        if (ray.isKeyDown(ray.KeyboardKey.KEY_DOWN)) {
-            new_direction.y += 1;
-            movement_changed = true;
+        // Get current key states
+        const left = ray.isKeyDown(ray.KeyboardKey.KEY_LEFT);
+        const right = ray.isKeyDown(ray.KeyboardKey.KEY_RIGHT);
+        const up = ray.isKeyDown(ray.KeyboardKey.KEY_UP);
+        const down = ray.isKeyDown(ray.KeyboardKey.KEY_DOWN);
+
+        // Update direction based on keys
+        if (left) new_direction.x -= 1;
+        if (right) new_direction.x += 1;
+        if (up) new_direction.y -= 1;
+        if (down) new_direction.y += 1;
+
+        // Normalize diagonal movement
+        if (new_direction.x != 0 and new_direction.y != 0) {
+            const length = @sqrt(2.0); // Length of (1,1) vector
+            new_direction.x /= length;
+            new_direction.y /= length;
         }
 
-        // Only create movement event if there's actual change
-        if (movement_changed or
-            (new_direction.x != 0 or new_direction.y != 0))
-        {
+        // Send movement event if we're moving or if we just stopped moving
+        const was_moving = self.state.direction.x != 0 or self.state.direction.y != 0;
+        const is_moving = new_direction.x != 0 or new_direction.y != 0;
+
+        if (is_moving or was_moving) {
             try self.event_queue.append(.{
                 .source = .local,
                 .timestamp = current_time,
@@ -89,8 +88,9 @@ pub const InputManager = struct {
                     },
                 },
             });
-            self.state.direction = new_direction;
         }
+
+        self.state.direction = new_direction;
 
         // Handle spawn input
         const spawn_state = ray.isKeyDown(ray.KeyboardKey.KEY_SPACE);

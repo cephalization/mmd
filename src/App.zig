@@ -27,11 +27,10 @@ pub const App = struct {
     }
 
     pub fn update(self: *App) !void {
+        const current_game_time = ray.getTime();
         const delta_time = ray.getFrameTime();
-        try self.client.update(delta_time);
-        std.debug.print("Client update complete\n", .{});
+        try self.client.update(delta_time, current_game_time);
         try self.renderer.update();
-        std.debug.print("Renderer update complete\n", .{});
     }
 
     pub fn render(self: *App) !void {

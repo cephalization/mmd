@@ -59,27 +59,33 @@ pub const GameClient = struct {
     client_id: ?u64,
     player_entity_id: ?usize,
     mode: GameMode,
-    last_state_update: f64,
+    last_state_update: f64 = 0,
     connection_state: ConnectionState,
     connect_tries: u32,
     last_connect_try: f64,
     network_thread: ?std.Thread = null,
     network_thread_data: ?*NetworkThread = null,
+    last_input_time: f64 = 0,
+    mutex: std.Thread.Mutex = .{},
 
     pub fn init(allocator: std.mem.Allocator, mode: GameMode) !GameClient {
         if (mode == .multiplayer) {
             try network.init();
         }
 
+        var game_state = try State.GameState.init(allocator, mode == .singleplayer);
+        if (mode == .multiplayer) {
+            game_state.is_client_mode = true;
+        }
+
         return GameClient{
             .allocator = allocator,
-            .game_state = try State.GameState.init(allocator, mode == .singleplayer),
+            .game_state = game_state,
             .socket = null,
             .server_endpoint = null,
             .client_id = null,
             .player_entity_id = null,
             .mode = mode,
-            .last_state_update = 0,
             .connection_state = .disconnected,
             .connect_tries = 0,
             .last_connect_try = 0,
@@ -173,16 +179,13 @@ pub const GameClient = struct {
         try self.sendToServer(msg);
     }
 
-    pub fn update(self: *GameClient, delta_time: f32) !void {
+    pub fn update(self: *GameClient, delta_time: f32, current_game_time: f64) !void {
         switch (self.mode) {
             .singleplayer => {
-                try self.game_state.update(delta_time);
+                try self.game_state.update(delta_time, current_game_time);
             },
             .multiplayer => {
                 if (self.socket == null) return error.NotConnected;
-
-                // Always update game state
-                try self.game_state.update(delta_time);
 
                 // Handle connection state
                 switch (self.connection_state) {
@@ -201,21 +204,35 @@ pub const GameClient = struct {
                         }
                     },
                     .connected => {
-                        // First apply local input events to our state
-                        try self.game_state.update(delta_time);
+                        self.mutex.lock();
+                        defer self.mutex.unlock();
 
-                        // Then send them to server
-                        for (self.game_state.input_manager.processEvents()) |event| {
+                        // Poll for new input first
+                        try self.game_state.input_manager.pollLocalInput();
+
+                        // Get pending input events
+                        const pending_events = self.game_state.input_manager.processEvents();
+                        const current_time = ray.getTime();
+
+                        // Send input events to server
+                        for (pending_events) |event| {
                             if (event.source == .local) {
+                                switch (event.data) {
+                                    .movement => |mov| {
+                                        std.debug.print("Client sending movement: ({d:.2}, {d:.2})\n", .{ mov.x, mov.y });
+                                    },
+                                    else => {},
+                                }
                                 var msg = Protocol.NetworkMessage.init(.input_event);
-                                // Set the source player ID to our player entity ID
                                 var modified_event = event;
                                 modified_event.source_player_id = self.player_entity_id.?;
                                 msg.payload.input_event = modified_event;
                                 try self.sendToServer(msg);
+                                self.last_input_time = current_time;
                             }
                         }
-                        // Clear processed events
+
+                        // Clear events after processing them
                         self.game_state.input_manager.clearEvents();
                     },
                     .disconnected => return error.NotConnected,
@@ -225,6 +242,9 @@ pub const GameClient = struct {
     }
 
     fn handleMessage(self: *GameClient, message: Protocol.NetworkMessage) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
         std.debug.print("Handling message of type: {}\n", .{message.type});
         switch (message.type) {
             .connect_response => {
@@ -235,6 +255,7 @@ pub const GameClient = struct {
                 self.client_id = connect_response.client_id;
                 self.player_entity_id = connect_response.player_entity_id;
                 self.game_state.player_id = connect_response.player_entity_id;
+                self.game_state.input_manager.player_id = connect_response.player_entity_id;
                 self.connection_state = .connected;
                 std.debug.print("Connection successful! Client ID: {}, Player Entity ID: {}\n", .{ self.client_id.?, self.player_entity_id.? });
             },
@@ -242,6 +263,7 @@ pub const GameClient = struct {
             .state_update => {
                 std.debug.print("Received state update with {} entities\n", .{message.payload.state_update.entities.len});
                 const state_update = message.payload.state_update;
+                const current_time = ray.getTime();
 
                 // Ensure we have enough capacity for all entities
                 while (self.game_state.entity_manager.entities.len < state_update.entities.len) {
@@ -255,18 +277,45 @@ pub const GameClient = struct {
 
                 // Update entity positions and properties
                 for (state_update.entities, 0..) |entity, i| {
-                    if (i >= self.game_state.entity_manager.entities.len) break;
-
-                    // Skip updating our own player's position to avoid overwriting local state
+                    // Only interpolate our own player's position if we've moved recently
                     if (self.player_entity_id) |player_id| {
-                        if (i == player_id) continue;
+                        if (i == player_id) {
+                            const time_since_input = current_time - self.last_input_time;
+                            // Always interpolate, but use a faster lerp when input is recent
+                            const current_pos = self.game_state.entity_manager.entities.items(.position)[i];
+                            const server_pos = .{ .x = entity.position.x, .y = entity.position.y };
+
+                            std.debug.print("Player {}: Current pos: ({d:.2}, {d:.2}), Server pos: ({d:.2}, {d:.2})\n", .{ player_id, current_pos.x, current_pos.y, server_pos.x, server_pos.y });
+
+                            // Use a faster lerp factor when input is recent
+                            const base_lerp: f32 = 0.3;
+                            const input_bonus: f32 = if (time_since_input < 0.033) @as(f32, 0.2) else @as(f32, 0.0);
+                            const lerp_factor: f32 = base_lerp + input_bonus;
+
+                            self.game_state.entity_manager.entities.items(.position)[i] = .{
+                                .x = current_pos.x + (server_pos.x - current_pos.x) * lerp_factor,
+                                .y = current_pos.y + (server_pos.y - current_pos.y) * lerp_factor,
+                            };
+                            continue;
+                        }
                     }
 
-                    // Update entity properties
+                    // For other entities, just apply the position directly
                     self.game_state.entity_manager.entities.items(.position)[i] = .{ .x = entity.position.x, .y = entity.position.y };
                     self.game_state.entity_manager.entities.items(.scale)[i] = entity.scale;
                     self.game_state.entity_manager.entities.items(.deleteable)[i] = entity.deleteable;
                     self.game_state.entity_manager.entities.items(.entity_type)[i] = entity.entity_type;
+                    self.game_state.entity_manager.entities.items(.active)[i] = entity.active;
+                }
+
+                // Update last state update time BEFORE trimming entities
+                self.last_state_update = current_time;
+
+                // Trim any excess entities
+                if (self.game_state.entity_manager.entities.len > state_update.entities.len) {
+                    self.game_state.entity_manager.entities.resize(self.allocator, state_update.entities.len) catch |err| {
+                        std.debug.print("Warning: Failed to trim excess entities: {}\n", .{err});
+                    };
                 }
 
                 // Update relationships
@@ -288,8 +337,6 @@ pub const GameClient = struct {
                         self.game_state.input_manager.player_id = id;
                     }
                 }
-
-                self.last_state_update = state_update.timestamp;
             },
 
             .player_joined => {
@@ -326,9 +373,13 @@ pub const GameClient = struct {
     fn sendToServer(self: *GameClient, message: Protocol.NetworkMessage) !void {
         if (self.socket == null or self.server_endpoint == null) return error.NotConnected;
 
+        // std.debug.print("Sending message to server\n", .{});
+
         const json = try std.json.stringifyAlloc(self.allocator, message, .{});
         defer self.allocator.free(json);
 
-        _ = try self.socket.?.sendTo(self.server_endpoint.?, json);
+        const socket = self.socket.?;
+        const endpoint = self.server_endpoint.?;
+        _ = try socket.sendTo(endpoint, json);
     }
 };

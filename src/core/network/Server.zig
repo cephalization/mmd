@@ -77,7 +77,7 @@ pub const GameServer = struct {
             .socket = socket,
             .next_client_id = 1,
             .last_state_update = std.time.nanoTimestamp(),
-            .state_update_rate = std.time.ns_per_s / 60, // 60 Hz state updates
+            .state_update_rate = std.time.ns_per_s / 20, // 20 Hz state updates (50ms)
             .network_thread = null,
             .network_thread_data = null,
         };
@@ -141,15 +141,16 @@ pub const GameServer = struct {
             const frame_time = current_time - last_frame_time;
             last_frame_time = current_time;
 
-            // Send state updates if needed
+            // First update game state to process any pending input events
+            const delta_time = @as(f32, @floatFromInt(frame_time)) / std.time.ns_per_s;
+            try self.game_state.update(delta_time, @as(f64, @floatFromInt(current_time)));
+
+            // Then send state updates if needed
             const time_since_last_update = current_time - self.last_state_update;
             if (time_since_last_update >= self.state_update_rate) {
                 try self.broadcastGameState();
                 self.last_state_update = current_time;
             }
-
-            // Update game state
-            try self.game_state.update(@as(f32, @floatFromInt(frame_time)) / std.time.ns_per_s);
 
             // Sleep for remaining frame time
             const elapsed = std.time.nanoTimestamp() - current_time;
@@ -160,7 +161,6 @@ pub const GameServer = struct {
     }
 
     fn handleMessage(self: *GameServer, message: Protocol.NetworkMessage, sender: network.EndPoint) !void {
-        std.debug.print("Server handling message of type: {}\n", .{message.type});
         switch (message.type) {
             .connect_request => {
                 std.debug.print("Received connect request from {}\n", .{sender});
@@ -178,8 +178,6 @@ pub const GameServer = struct {
                     .addr = sender,
                 });
 
-                // std.debug.print("Created new client with ID: {}, player entity ID: {}\n", .{ client_id, player_entity_id });
-
                 // Send connect response
                 var response = Protocol.NetworkMessage.init(.connect_response);
                 response.payload.connect_response = .{
@@ -189,7 +187,7 @@ pub const GameServer = struct {
                 };
 
                 try self.sendTo(sender, response);
-                std.debug.print("Sent connect response to client\n", .{});
+                std.debug.print("Client {} connected with player ID {}\n", .{ client_id, player_entity_id });
 
                 // Notify other clients
                 var join_msg = Protocol.NetworkMessage.init(.player_joined);
@@ -201,7 +199,7 @@ pub const GameServer = struct {
             },
 
             .disconnect => {
-                if (message.payload.connect_request.client_id) |client_id| {
+                if (message.payload.disconnect.client_id) |client_id| {
                     if (self.clients.get(client_id)) |client| {
                         // Remove player entity
                         self.game_state.entity_manager.deleteEntity(client.player_entity_id);
@@ -221,12 +219,34 @@ pub const GameServer = struct {
             },
 
             .input_event => {
-                // Process input events from clients
                 const input_event = message.payload.input_event;
-                // Convert local events from clients to remote events for processing
-                var modified_event = input_event;
-                modified_event.source = .remote;
-                try self.game_state.input_manager.addRemoteInput(modified_event);
+
+                // Only log non-zero movement events
+                switch (input_event.data) {
+                    .movement => |mov| {
+                        if (mov.x != 0 or mov.y != 0) {
+                            std.debug.print("Server received movement from player {}: ({d:.2}, {d:.2})\n", .{ input_event.source_player_id, mov.x, mov.y });
+                        }
+                    },
+                    else => {},
+                }
+
+                // Find the client by player entity ID
+                var it = self.clients.iterator();
+                while (it.next()) |entry| {
+                    const client = entry.value_ptr;
+                    if (client.player_entity_id == input_event.source_player_id) {
+                        if (input_event.timestamp < client.last_input_time) {
+                            return; // Ignore old inputs
+                        }
+                        client.last_input_time = input_event.timestamp;
+
+                        var modified_event = input_event;
+                        modified_event.source = .remote;
+                        try self.game_state.input_manager.addRemoteInput(modified_event);
+                        break;
+                    }
+                }
             },
 
             else => {}, // Ignore other message types that should only go client -> server
@@ -234,31 +254,36 @@ pub const GameServer = struct {
     }
 
     fn broadcastGameState(self: *GameServer) !void {
-        // std.debug.print("Starting to broadcast game state\n", .{});
+        // std.debug.print("Broadcasting game state to clients\n", .{});
         var state_msg = Protocol.NetworkMessage.init(.state_update);
 
         // Convert entities to network format
         var network_entities = std.ArrayList(Protocol.NetworkEntity).init(self.allocator);
         defer network_entities.deinit();
-
+        errdefer network_entities.deinit();
         // Ensure we have enough capacity for all entities
         try network_entities.ensureTotalCapacity(self.game_state.entity_manager.entities.len);
 
         const entities = self.game_state.entity_manager.entities.slice();
         // std.debug.print("Converting {} entities to network format\n", .{entities.len});
-        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), 0..entities.len) |pos, scale, deleteable, entity_type, id| {
+        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), 0..entities.len) |pos, scale, deleteable, entity_type, active, id| {
+            if (id >= entities.len) continue; // Skip invalid entities
+
             try network_entities.append(.{
                 .id = id,
                 .position = .{ .x = pos.x, .y = pos.y },
                 .scale = scale,
                 .deleteable = deleteable,
                 .entity_type = entity_type,
+                .active = active,
             });
+            // std.debug.print("Entity {}: pos=({d:.2}, {d:.2})\n", .{ id, pos.x, pos.y });
         }
 
         // Convert relationships to network format
         var network_relationships = std.ArrayList(Protocol.NetworkRelationship).init(self.allocator);
         defer network_relationships.deinit();
+        errdefer network_relationships.deinit();
 
         // Ensure we have enough capacity for all relationships
         try network_relationships.ensureTotalCapacity(self.game_state.entity_manager.relationships.items.len);
