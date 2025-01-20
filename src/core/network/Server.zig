@@ -10,6 +10,40 @@ const Client = struct {
     player_entity_id: usize,
     last_input_time: f64,
     addr: network.EndPoint,
+    initial_state_sent: bool = false,
+    pending_chunks: std.AutoHashMap(u32, bool),
+    current_chunk: u32 = 0,
+    total_chunks: u32 = 0,
+    pending_updates: std.ArrayList(Protocol.NetworkMessage),
+
+    pub fn init(allocator: std.mem.Allocator, id: u64, player_entity_id: usize, addr: network.EndPoint) !Client {
+        return Client{
+            .id = id,
+            .player_entity_id = player_entity_id,
+            .last_input_time = 0,
+            .addr = addr,
+            .initial_state_sent = false,
+            .pending_chunks = std.AutoHashMap(u32, bool).init(allocator),
+            .current_chunk = 0,
+            .total_chunks = 0,
+            .pending_updates = std.ArrayList(Protocol.NetworkMessage).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Client) void {
+        self.pending_chunks.deinit();
+        for (self.pending_updates.items) |*msg| {
+            // Free any allocated memory in network messages
+            if (msg.type == .relationship_updated) {
+                self.pending_updates.allocator.free(msg.payload.relationship_updated.children);
+            } else if (msg.type == .initial_state_chunk) {
+                for (msg.payload.initial_state_chunk.relationships) |rel| {
+                    self.pending_updates.allocator.free(rel.children);
+                }
+            }
+        }
+        self.pending_updates.deinit();
+    }
 };
 
 const NetworkThread = struct {
@@ -56,6 +90,9 @@ pub const GameServer = struct {
     state_update_rate: i128, // How often to send state updates (in nanoseconds)
     network_thread: ?std.Thread = null,
     network_thread_data: ?*NetworkThread = null,
+    last_entity_states: std.AutoHashMap(usize, Protocol.NetworkEntity),
+    last_relationships: std.ArrayList(Protocol.NetworkRelationship),
+    entities_per_chunk: u32 = 10, // Number of entities to send in each initial state chunk
 
     pub fn init(allocator: std.mem.Allocator, port: u16) !*GameServer {
         try network.init();
@@ -81,6 +118,9 @@ pub const GameServer = struct {
             .state_update_rate = std.time.ns_per_s / 20, // 20 Hz state updates (50ms)
             .network_thread = null,
             .network_thread_data = null,
+            .last_entity_states = std.AutoHashMap(usize, Protocol.NetworkEntity).init(allocator),
+            .last_relationships = std.ArrayList(Protocol.NetworkRelationship).init(allocator),
+            .entities_per_chunk = 10,
         };
 
         // Create network thread data
@@ -124,6 +164,10 @@ pub const GameServer = struct {
             }
             self.game_state.entity_manager.relationships.clearAndFree();
         }
+
+        // Clean up new fields
+        self.last_entity_states.deinit();
+        self.last_relationships.deinit();
 
         self.clients.deinit();
         self.game_state.deinit();
@@ -177,6 +221,11 @@ pub const GameServer = struct {
                     .player_entity_id = player_entity_id,
                     .last_input_time = 0,
                     .addr = sender,
+                    .initial_state_sent = false,
+                    .pending_chunks = std.AutoHashMap(u32, bool).init(self.allocator),
+                    .current_chunk = 0,
+                    .total_chunks = 0,
+                    .pending_updates = std.ArrayList(Protocol.NetworkMessage).init(self.allocator),
                 });
 
                 // Send connect response
@@ -190,13 +239,34 @@ pub const GameServer = struct {
                 try self.sendTo(sender, response);
                 std.debug.print("Client {} connected with player ID {}\n", .{ client_id, player_entity_id });
 
-                // Notify other clients
+                // Start sending initial state chunks
+                try self.startInitialStateStream(client_id);
+
+                // Notify other clients about the new player
                 var join_msg = Protocol.NetworkMessage.init(.player_joined);
                 join_msg.payload.player_joined = .{
                     .client_id = client_id,
                     .player_entity_id = player_entity_id,
                 };
                 try self.broadcast(join_msg, client_id);
+            },
+
+            .initial_state_ack => {
+                // Find client by endpoint
+                var it = self.clients.iterator();
+                while (it.next()) |entry| {
+                    const client = entry.value_ptr;
+                    if (std.meta.eql(client.addr, sender)) {
+                        const chunk_id = message.payload.initial_state_ack.chunk_id;
+                        _ = client.pending_chunks.remove(chunk_id);
+
+                        // If all chunks are acknowledged, mark initial state as sent and process queued updates
+                        if (client.pending_chunks.count() == 0) {
+                            try self.handleInitialStateComplete(client);
+                        }
+                        break;
+                    }
+                }
             },
 
             .disconnect => {
@@ -255,74 +325,135 @@ pub const GameServer = struct {
     }
 
     fn broadcastGameState(self: *GameServer) !void {
-        // std.debug.print("Broadcasting game state to clients\n", .{});
-        var state_msg = Protocol.NetworkMessage.init(.state_update);
-
-        // Convert entities to network format
-        var network_entities = std.ArrayList(Protocol.NetworkEntity).init(self.allocator);
-        defer network_entities.deinit();
-
-        // Ensure we have enough capacity for all entities
-        try network_entities.ensureTotalCapacity(self.game_state.entity_manager.entities.len);
-
+        // Convert current entities to network format and detect changes
         const entities = self.game_state.entity_manager.entities.slice();
-        // std.debug.print("Converting {} entities to network format\n", .{entities.len});
-        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), 0..entities.len) |pos, scale, deleteable, entity_type, active, id| {
-            if (id >= entities.len) continue; // Skip invalid entities
 
-            try network_entities.append(.{
+        // Track created, updated, and deleted entities
+        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), 0..entities.len) |pos, scale, deleteable, entity_type, active, id| {
+            if (id >= entities.len) continue;
+
+            const current_entity = Protocol.NetworkEntity{
                 .id = id,
                 .position = .{ .x = pos.x, .y = pos.y },
                 .scale = scale,
                 .deleteable = deleteable,
                 .entity_type = entity_type,
                 .active = active,
-            });
-            // std.debug.print("Entity {}: pos=({d:.2}, {d:.2})\n", .{ id, pos.x, pos.y });
+            };
+
+            // Check if this is a new entity
+            if (!self.last_entity_states.contains(id)) {
+                // Broadcast entity creation
+                var create_msg = Protocol.NetworkMessage.init(.entity_created);
+                create_msg.payload.entity_created = .{
+                    .entity = current_entity,
+                };
+                try self.broadcastToInitializedClients(create_msg, null);
+                try self.last_entity_states.put(id, current_entity);
+                continue;
+            }
+
+            // Check for updates
+            const last_entity = self.last_entity_states.get(id).?;
+            var has_changes = false;
+            var update_msg = Protocol.NetworkMessage.init(.entity_updated);
+            update_msg.payload.entity_updated = .{ .id = id };
+
+            if (!std.meta.eql(last_entity.position, current_entity.position)) {
+                update_msg.payload.entity_updated.position = .{ .x = current_entity.position.x, .y = current_entity.position.y };
+                has_changes = true;
+            }
+            if (last_entity.scale != current_entity.scale) {
+                update_msg.payload.entity_updated.scale = current_entity.scale;
+                has_changes = true;
+            }
+            if (last_entity.deleteable != current_entity.deleteable) {
+                update_msg.payload.entity_updated.deleteable = current_entity.deleteable;
+                has_changes = true;
+            }
+            if (last_entity.entity_type != current_entity.entity_type) {
+                update_msg.payload.entity_updated.entity_type = current_entity.entity_type;
+                has_changes = true;
+            }
+            if (last_entity.active != current_entity.active) {
+                update_msg.payload.entity_updated.active = current_entity.active;
+                has_changes = true;
+            }
+
+            if (has_changes) {
+                try self.broadcastToInitializedClients(update_msg, null);
+                try self.last_entity_states.put(id, current_entity);
+            }
         }
 
-        // Convert relationships to network format
-        var network_relationships = std.ArrayList(Protocol.NetworkRelationship).init(self.allocator);
-        defer network_relationships.deinit();
+        // Check for deleted entities
+        var it = self.last_entity_states.iterator();
+        while (it.next()) |entry| {
+            const id = entry.key_ptr.*;
+            if (id >= entities.len) {
+                // Entity was deleted
+                var delete_msg = Protocol.NetworkMessage.init(.entity_deleted);
+                delete_msg.payload.entity_deleted = .{ .id = id };
+                try self.broadcastToInitializedClients(delete_msg, null);
+                _ = self.last_entity_states.remove(id);
+            }
+        }
 
-        // Ensure we have enough capacity for all relationships
-        try network_relationships.ensureTotalCapacity(self.game_state.entity_manager.relationships.items.len);
-
-        // std.debug.print("Converting {} relationships to network format\n", .{self.game_state.entity_manager.relationships.items.len});
+        // Track relationship changes
+        self.last_relationships.clearRetainingCapacity();
         for (self.game_state.entity_manager.relationships.items) |rel| {
-            try network_relationships.append(.{
+            var update_msg = Protocol.NetworkMessage.init(.relationship_updated);
+            update_msg.payload.relationship_updated = .{
+                .parent_id = rel.parent_id,
+                .children = try self.allocator.dupe(usize, rel.children.items),
+            };
+            try self.broadcastToInitializedClients(update_msg, null);
+
+            // Store current state
+            try self.last_relationships.append(.{
                 .parent_id = rel.parent_id,
                 .children = try self.allocator.dupe(usize, rel.children.items),
             });
         }
+    }
 
-        // Create state update
-        state_msg.payload.state_update = .{
-            .timestamp = @as(f64, @floatFromInt(std.time.nanoTimestamp())),
-            .entities = try self.allocator.dupe(Protocol.NetworkEntity, network_entities.items),
-            .relationships = try self.allocator.dupe(Protocol.NetworkRelationship, network_relationships.items),
-        };
-
-        // Verify all player entities exist before sending
+    fn broadcastToInitializedClients(self: *GameServer, message: Protocol.NetworkMessage, exclude_client: ?u64) !void {
         var it = self.clients.iterator();
         while (it.next()) |entry| {
-            const client = entry.value_ptr.*;
-            if (client.player_entity_id >= network_entities.items.len) {
-                std.debug.print("Warning: Client {} has invalid player entity ID {}\n", .{ client.id, client.player_entity_id });
+            const client = entry.value_ptr;
+            if (exclude_client != null and client.id == exclude_client.?) {
                 continue;
             }
+            if (client.initial_state_sent) {
+                try self.sendTo(client.addr, message);
+            } else {
+                // Deep copy the message before queueing
+                var msg_copy = message;
+                if (message.type == .relationship_updated) {
+                    msg_copy.payload.relationship_updated.children = try self.allocator.dupe(usize, message.payload.relationship_updated.children);
+                } else if (message.type == .initial_state_chunk) {
+                    var rels = try self.allocator.alloc(Protocol.NetworkRelationship, message.payload.initial_state_chunk.relationships.len);
+                    for (message.payload.initial_state_chunk.relationships, 0..) |rel, i| {
+                        rels[i] = .{
+                            .parent_id = rel.parent_id,
+                            .children = try self.allocator.dupe(usize, rel.children),
+                        };
+                    }
+                    msg_copy.payload.initial_state_chunk.relationships = rels;
+                }
+                try client.pending_updates.append(msg_copy);
+            }
         }
+    }
 
-        // std.debug.print("Broadcasting state update to {} clients\n", .{self.clients.count()});
-        try self.broadcast(state_msg, null);
+    fn handleInitialStateComplete(self: *GameServer, client: *Client) !void {
+        client.initial_state_sent = true;
 
-        // Clean up allocated memory
-        self.allocator.free(state_msg.payload.state_update.entities);
-        for (state_msg.payload.state_update.relationships) |rel| {
-            self.allocator.free(rel.children);
+        // Send all queued updates
+        for (client.pending_updates.items) |update| {
+            try self.sendTo(client.addr, update);
         }
-        self.allocator.free(state_msg.payload.state_update.relationships);
-        // std.debug.print("Finished broadcasting game state\n", .{});
+        client.pending_updates.clearRetainingCapacity();
     }
 
     fn broadcast(self: *GameServer, message: Protocol.NetworkMessage, exclude_client: ?u64) !void {
@@ -344,5 +475,70 @@ pub const GameServer = struct {
 
         // std.debug.print("Sending {} bytes to {}\n", .{ json.len, endpoint });
         _ = try self.socket.sendTo(endpoint, json);
+    }
+
+    fn startInitialStateStream(self: *GameServer, client_id: u64) !void {
+        var client = self.clients.getPtr(client_id) orelse return error.ClientNotFound;
+
+        // Convert current entities to network format
+        var network_entities = std.ArrayList(Protocol.NetworkEntity).init(self.allocator);
+        defer network_entities.deinit();
+
+        const entities = self.game_state.entity_manager.entities.slice();
+        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), 0..entities.len) |pos, scale, deleteable, entity_type, active, id| {
+            if (id >= entities.len) continue;
+
+            try network_entities.append(.{
+                .id = id,
+                .position = .{ .x = pos.x, .y = pos.y },
+                .scale = scale,
+                .deleteable = deleteable,
+                .entity_type = entity_type,
+                .active = active,
+            });
+        }
+
+        // Convert relationships to network format
+        var network_relationships = std.ArrayList(Protocol.NetworkRelationship).init(self.allocator);
+        defer network_relationships.deinit();
+
+        for (self.game_state.entity_manager.relationships.items) |rel| {
+            try network_relationships.append(.{
+                .parent_id = rel.parent_id,
+                .children = try self.allocator.dupe(usize, rel.children.items),
+            });
+        }
+
+        // Calculate total chunks needed
+        const total_entities = network_entities.items.len;
+        const total_chunks = @divTrunc(total_entities + self.entities_per_chunk - 1, self.entities_per_chunk);
+        client.total_chunks = @intCast(total_chunks);
+
+        // Send initial state in chunks
+        var chunk_id: u32 = 0;
+        var entity_index: usize = 0;
+        while (entity_index < total_entities) {
+            const chunk_size = @min(self.entities_per_chunk, total_entities - entity_index);
+            const chunk_end = entity_index + chunk_size;
+
+            var chunk_msg = Protocol.NetworkMessage.init(.initial_state_chunk);
+            chunk_msg.payload.initial_state_chunk = .{
+                .chunk_id = chunk_id,
+                .total_chunks = @intCast(total_chunks),
+                .entities = network_entities.items[entity_index..chunk_end],
+                .relationships = network_relationships.items,
+            };
+
+            try self.sendTo(client.addr, chunk_msg);
+            try client.pending_chunks.put(chunk_id, true);
+
+            entity_index = chunk_end;
+            chunk_id += 1;
+        }
+
+        // Clean up relationship children arrays
+        for (network_relationships.items) |rel| {
+            self.allocator.free(rel.children);
+        }
     }
 };

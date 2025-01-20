@@ -205,8 +205,8 @@ pub const GameClient = struct {
                         }
                     },
                     .connected => {
-                        self.mutex.lock();
-                        defer self.mutex.unlock();
+                        // self.mutex.lock();
+                        // defer self.mutex.unlock();
 
                         // Poll for new input first
                         try self.game_state.input_manager.pollLocalInput();
@@ -261,60 +261,121 @@ pub const GameClient = struct {
                 std.debug.print("Connection successful! Client ID: {}, Player Entity ID: {}\n", .{ self.client_id.?, self.player_entity_id.? });
             },
 
-            .state_update => {
-                std.debug.print("Received state update with {} entities\n", .{message.payload.state_update.entities.len});
-                const state_update = message.payload.state_update;
-                const current_time = ray.getTime();
+            .initial_state_chunk => {
+                const chunk = message.payload.initial_state_chunk;
+                std.debug.print("Received initial state chunk {}/{} with {} entities\n", .{ chunk.chunk_id + 1, chunk.total_chunks, chunk.entities.len });
 
-                // Handle entities
-                const same_size = self.game_state.entity_manager.entities.len == state_update.entities.len;
-                if (!same_size) {
-                    // If size differs, resize the list
-                    try self.game_state.entity_manager.entities.resize(self.allocator, state_update.entities.len);
+                // Process entities in this chunk
+                for (chunk.entities) |entity| {
+                    // Ensure we have enough capacity
+                    while (self.game_state.entity_manager.entities.len <= entity.id) {
+                        try self.game_state.entity_manager.entities.append(self.allocator, .{
+                            .position = .{ .x = entity.position.x, .y = entity.position.y },
+                            .scale = entity.scale,
+                            .deleteable = entity.deleteable,
+                            .entity_type = entity.entity_type,
+                            .active = entity.active,
+                        });
+                    }
+
+                    // Update entity data
+                    self.game_state.entity_manager.entities.items(.position)[entity.id] = .{ .x = entity.position.x, .y = entity.position.y };
+                    self.game_state.entity_manager.entities.items(.scale)[entity.id] = entity.scale;
+                    self.game_state.entity_manager.entities.items(.deleteable)[entity.id] = entity.deleteable;
+                    self.game_state.entity_manager.entities.items(.entity_type)[entity.id] = entity.entity_type;
+                    self.game_state.entity_manager.entities.items(.active)[entity.id] = entity.active;
                 }
 
-                // Copy all entity data directly
-                for (state_update.entities, 0..) |entity, i| {
-                    self.game_state.entity_manager.entities.items(.position)[i] = .{ .x = entity.position.x, .y = entity.position.y };
-                    self.game_state.entity_manager.entities.items(.scale)[i] = entity.scale;
-                    self.game_state.entity_manager.entities.items(.deleteable)[i] = entity.deleteable;
-                    self.game_state.entity_manager.entities.items(.entity_type)[i] = entity.entity_type;
-                    self.game_state.entity_manager.entities.items(.active)[i] = entity.active;
-                }
+                // Process relationships
+                if (chunk.chunk_id == 0) { // Only process relationships in first chunk
+                    // Clear existing relationships
+                    for (self.game_state.entity_manager.relationships.items) |*rel| {
+                        rel.children.deinit();
+                    }
+                    self.game_state.entity_manager.relationships.clearRetainingCapacity();
 
-                // Clear and recreate all relationships
-                for (self.game_state.entity_manager.relationships.items) |*rel| {
-                    rel.children.deinit();
-                }
-                self.game_state.entity_manager.relationships.clearRetainingCapacity();
-
-                // Add new relationships
-                try self.game_state.entity_manager.relationships.ensureTotalCapacity(state_update.relationships.len);
-                for (state_update.relationships) |relationship| {
-                    if (relationship.parent_id) |parent_id| {
-                        if (parent_id >= state_update.entities.len) continue;
-
+                    // Add new relationships
+                    try self.game_state.entity_manager.relationships.ensureTotalCapacity(chunk.relationships.len);
+                    for (chunk.relationships) |rel| {
                         var new_rel = try self.game_state.entity_manager.relationships.addOne();
                         new_rel.* = .{
-                            .parent_id = relationship.parent_id,
+                            .parent_id = rel.parent_id,
                             .children = std.ArrayList(usize).init(self.allocator),
                             .allocator = self.allocator,
                         };
-
-                        try new_rel.children.appendSlice(relationship.children);
+                        try new_rel.children.appendSlice(rel.children);
                     }
                 }
 
-                // Update last state update time
-                self.last_state_update = current_time;
+                // Send acknowledgment
+                var ack_msg = Protocol.NetworkMessage.init(.initial_state_ack);
+                ack_msg.payload.initial_state_ack = .{
+                    .chunk_id = chunk.chunk_id,
+                };
+                try self.sendToServer(ack_msg);
+            },
 
-                // Update player ID if we have one
-                if (self.player_entity_id) |id| {
-                    if (id < self.game_state.entity_manager.entities.len) {
-                        self.game_state.player_id = id;
-                        self.game_state.input_manager.player_id = id;
+            .entity_created => {
+                const entity = message.payload.entity_created.entity;
+                // Ensure we have enough capacity
+                while (self.game_state.entity_manager.entities.len <= entity.id) {
+                    try self.game_state.entity_manager.entities.append(self.allocator, .{
+                        .position = .{ .x = entity.position.x, .y = entity.position.y },
+                        .scale = entity.scale,
+                        .deleteable = entity.deleteable,
+                        .entity_type = entity.entity_type,
+                        .active = entity.active,
+                    });
+                }
+            },
+
+            .entity_updated => {
+                const entity_update = message.payload.entity_updated;
+                if (entity_update.id >= self.game_state.entity_manager.entities.len) return;
+
+                if (entity_update.position) |pos| {
+                    self.game_state.entity_manager.entities.items(.position)[entity_update.id] = .{ .x = pos.x, .y = pos.y };
+                }
+                if (entity_update.scale) |scale| {
+                    self.game_state.entity_manager.entities.items(.scale)[entity_update.id] = scale;
+                }
+                if (entity_update.deleteable) |deleteable| {
+                    self.game_state.entity_manager.entities.items(.deleteable)[entity_update.id] = deleteable;
+                }
+                if (entity_update.entity_type) |entity_type| {
+                    self.game_state.entity_manager.entities.items(.entity_type)[entity_update.id] = entity_type;
+                }
+                if (entity_update.active) |active| {
+                    self.game_state.entity_manager.entities.items(.active)[entity_update.id] = active;
+                }
+            },
+
+            .entity_deleted => {
+                const entity_id = message.payload.entity_deleted.id;
+                if (entity_id < self.game_state.entity_manager.entities.len) {
+                    self.game_state.entity_manager.deleteEntity(entity_id);
+                }
+            },
+
+            .relationship_updated => {
+                const rel_update = message.payload.relationship_updated;
+                // Find or create relationship
+                for (self.game_state.entity_manager.relationships.items) |*rel| {
+                    if (rel.parent_id == rel_update.parent_id) {
+                        rel.children.clearRetainingCapacity();
+                        try rel.children.appendSlice(rel_update.children);
+                        return;
                     }
                 }
+
+                // If not found, create new relationship
+                var new_rel = try self.game_state.entity_manager.relationships.addOne();
+                new_rel.* = .{
+                    .parent_id = rel_update.parent_id,
+                    .children = std.ArrayList(usize).init(self.allocator),
+                    .allocator = self.allocator,
+                };
+                try new_rel.children.appendSlice(rel_update.children);
             },
 
             .player_joined => {
@@ -322,8 +383,8 @@ pub const GameClient = struct {
                 // Create a new player entity with the received ID
                 const window_width = ray.getScreenWidth();
                 const window_height = ray.getScreenHeight();
-                const center_x = @divTrunc(@as(f32, @floatFromInt(window_width)), 2);
-                const center_y = @divTrunc(@as(f32, @floatFromInt(window_height)), 2);
+                const center_x = @as(f32, @floatFromInt(window_width)) / 2.0;
+                const center_y = @as(f32, @floatFromInt(window_height)) / 2.0;
 
                 // Ensure we have enough capacity for the new player's ID
                 while (self.game_state.entity_manager.entities.len <= player.player_entity_id) {
@@ -332,6 +393,7 @@ pub const GameClient = struct {
                         .scale = 1.0,
                         .deleteable = 0,
                         .entity_type = .player,
+                        .active = true,
                     });
                 }
             },
