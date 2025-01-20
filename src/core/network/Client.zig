@@ -239,7 +239,7 @@ pub const GameClient = struct {
                 switch (self.connection_state) {
                     .connecting => {
                         const current_time = ray.getTime();
-                        if (current_time - self.last_connect_try >= 0.1) { // Try every 100ms
+                        if (current_time - self.last_connect_try >= 10.0) { // Try every 10 seconds
                             self.connect_tries += 1;
                             if (self.connect_tries >= 10) {
                                 return error.ConnectionTimeout;
