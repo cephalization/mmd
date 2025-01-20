@@ -4,7 +4,7 @@ const Entity = @import("Entity.zig");
 const Input = @import("Input.zig");
 
 // Player movement constants
-pub const PLAYER_MOVE_SPEED: f32 = 400.0; // Base movement speed
+pub const PLAYER_MOVE_SPEED: f32 = 20.0; // Base movement speed
 
 // Flocking behavior constants
 pub const CLOSE_DISTANCE: f32 = 31.0; // Minimum desired distance between objects
@@ -28,6 +28,7 @@ pub const GameState = struct {
     is_marking_delete: bool,
     allocator: std.mem.Allocator,
     is_client_mode: bool,
+    player_directions: std.AutoHashMap(usize, ray.Vector2),
 
     pub fn init(allocator: std.mem.Allocator, create_player: bool) !GameState {
         var state = GameState{
@@ -43,6 +44,7 @@ pub const GameState = struct {
             .is_marking_delete = false,
             .allocator = allocator,
             .is_client_mode = false,
+            .player_directions = std.AutoHashMap(usize, ray.Vector2).init(allocator),
         };
 
         if (create_player) {
@@ -57,12 +59,14 @@ pub const GameState = struct {
                 .entity_type = .player,
             };
             state.player_id = try state.entity_manager.createEntity(player_entity, null);
+            try state.player_directions.put(state.player_id, .{ .x = 0, .y = 0 });
         }
 
         return state;
     }
 
     pub fn deinit(self: *GameState) void {
+        self.player_directions.deinit();
         self.input_manager.deinit();
         self.entity_manager.deinit();
     }
@@ -73,6 +77,9 @@ pub const GameState = struct {
         self.is_spawning = false;
         self.is_deleting = false;
         self.is_marking_delete = false;
+
+        // Clear all player directions - they will be set by movement events
+        self.player_directions.clearRetainingCapacity();
 
         // Poll for new input events
         try self.input_manager.pollLocalInput();
@@ -86,37 +93,14 @@ pub const GameState = struct {
         for (events) |event| {
             switch (event.data) {
                 .movement => |mov| {
-                    // Only log non-zero movement events
-                    if (mov.x != 0 or mov.y != 0) {
-                        std.debug.print("Processing movement event: ({d:.2}, {d:.2}), source: {}, player: {}\n", .{ mov.x, mov.y, event.source, event.source_player_id });
-                    }
-                    // Update player position
-                    const speed: f32 = PLAYER_MOVE_SPEED; // Base movement speed
                     const target_player_id = if (event.source == .local) self.player_id else event.source_player_id;
                     if (target_player_id >= self.entity_manager.entities.len) {
                         std.debug.print("Warning: Invalid player_id {}, entities length {}\n", .{ target_player_id, self.entity_manager.entities.len });
                         continue;
                     }
 
-                    // Only apply movement on server or in singleplayer mode
-                    // In multiplayer client mode, movement comes from server state updates
-                    if (!self.is_client_mode) {
-                        // Apply movement with normalized direction if moving
-                        if (mov.x != 0 or mov.y != 0) {
-                            // Clamp delta time to avoid huge jumps
-                            const clamped_delta = @min(delta_time, 0.032); // Max 32ms frame time
-
-                            const old_pos = self.entity_manager.entities.items(.position)[target_player_id];
-                            self.entity_manager.entities.items(.position)[target_player_id].x += mov.x * speed * clamped_delta;
-                            self.entity_manager.entities.items(.position)[target_player_id].y += mov.y * speed * clamped_delta;
-                            const new_pos = self.entity_manager.entities.items(.position)[target_player_id];
-
-                            // Only log significant position changes
-                            if (@abs(new_pos.x - old_pos.x) > 0.01 or @abs(new_pos.y - old_pos.y) > 0.01) {
-                                std.debug.print("Server moving player {}: ({d:.2}, {d:.2}) -> ({d:.2}, {d:.2})\n", .{ target_player_id, old_pos.x, old_pos.y, new_pos.x, new_pos.y });
-                            }
-                        }
-                    }
+                    // Store movement direction
+                    try self.player_directions.put(target_player_id, .{ .x = mov.x, .y = mov.y });
                 },
                 .spawn => |is_spawning| {
                     if (is_spawning) {
@@ -159,6 +143,18 @@ pub const GameState = struct {
         // Clear processed events
         self.input_manager.clearEvents();
 
+        // Apply movement for all players based on their current direction
+        // const clamped_delta = @min(delta_time, 0.032); // Max 32ms frame time
+        var dir_it = self.player_directions.iterator();
+        while (dir_it.next()) |entry| {
+            const player_id = entry.key_ptr.*;
+            const direction = entry.value_ptr.*;
+            if (direction.x != 0 or direction.y != 0) {
+                self.entity_manager.entities.items(.position)[player_id].x += direction.x * PLAYER_MOVE_SPEED;
+                self.entity_manager.entities.items(.position)[player_id].y += direction.y * PLAYER_MOVE_SPEED;
+            }
+        }
+
         var some_deleteable = false;
 
         // get active deleteable entities
@@ -186,7 +182,6 @@ pub const GameState = struct {
             for (entities.items(.active), entities.items(.deleteable), 0..) |active, deleteable, id| {
                 if (active and deleteable > 0) {
                     const delta = current_game_time - self.entity_manager.entities.items(.deleteable)[id];
-                    std.debug.print("Entity {}: active: {}, deleteable: {}, delta: {}\n", .{ id, active, deleteable, delta });
                     if (delta > delete_cooldown) {
                         self.entity_manager.deleteEntity(id);
                     }

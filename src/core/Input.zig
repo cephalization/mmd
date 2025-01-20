@@ -76,11 +76,11 @@ pub const InputManager = struct {
             new_direction.y /= length;
         }
 
-        // Send movement event if we're moving or if we just stopped moving
-        const was_moving = self.state.direction.x != 0 or self.state.direction.y != 0;
+        // Send movement event if direction changed or if enough time has passed
         const is_moving = new_direction.x != 0 or new_direction.y != 0;
+        const direction_changed = new_direction.x != self.state.direction.x or new_direction.y != self.state.direction.y;
 
-        if ((is_moving or was_moving) and current_time - self.last_movement_time >= self.movement_rate) {
+        if (direction_changed or (is_moving and current_time - self.last_movement_time >= self.movement_rate)) {
             try self.event_queue.append(.{
                 .source = .local,
                 .timestamp = current_time,

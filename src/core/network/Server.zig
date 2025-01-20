@@ -302,16 +302,6 @@ pub const GameServer = struct {
             .input_event => {
                 const input_event = message.payload.input_event;
 
-                // Only log non-zero movement events
-                switch (input_event.data) {
-                    .movement => |mov| {
-                        if (mov.x != 0 or mov.y != 0) {
-                            std.debug.print("Server received movement from player {}: ({d:.2}, {d:.2})\n", .{ input_event.source_player_id, mov.x, mov.y });
-                        }
-                    },
-                    else => {},
-                }
-
                 // Find the client by player entity ID
                 var it = self.clients.iterator();
                 while (it.next()) |entry| {

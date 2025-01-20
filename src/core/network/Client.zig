@@ -26,8 +26,14 @@ const NetworkThread = struct {
 
     fn run(self: *NetworkThread) !void {
         var buf: [Constants.MAX_PACKET_SIZE]u8 = undefined;
-
+        var messages_per_second: u32 = 0;
+        var last_time: f64 = 0;
+        var delta_accumulator: f64 = 0;
         while (!self.should_stop.load(.acquire)) {
+            const current_time = ray.getTime();
+            const delta_time = current_time - last_time;
+            last_time = current_time;
+            delta_accumulator += delta_time;
             const receive_result = self.socket.receiveFrom(&buf) catch |err| {
                 if (err == error.WouldBlock) {
                     std.time.sleep(1 * std.time.ns_per_ms); // Sleep 1ms to avoid busy loop
@@ -48,6 +54,14 @@ const NetworkThread = struct {
             self.client.handleMessage(message.value) catch |err| {
                 std.debug.print("Error handling message: {}\n", .{err});
             };
+
+            if (delta_accumulator >= 1.0) {
+                std.debug.print("Messages per second: {}\n", .{messages_per_second});
+                messages_per_second = 0;
+                delta_accumulator = 0;
+            } else {
+                messages_per_second += 1;
+            }
         }
     }
 };
@@ -218,12 +232,6 @@ pub const GameClient = struct {
                         // Send input events to server
                         for (pending_events) |event| {
                             if (event.source == .local) {
-                                switch (event.data) {
-                                    .movement => |mov| {
-                                        std.debug.print("Client sending movement: ({d:.2}, {d:.2})\n", .{ mov.x, mov.y });
-                                    },
-                                    else => {},
-                                }
                                 var msg = Protocol.NetworkMessage.init(.input_event);
                                 var modified_event = event;
                                 modified_event.source_player_id = self.player_entity_id.?;
@@ -246,7 +254,7 @@ pub const GameClient = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        std.debug.print("Handling message of type: {}\n", .{message.type});
+        // std.debug.print("Handling message of type: {}\n", .{message.type});
         switch (message.type) {
             .connect_response => {
                 std.debug.print("Received connect response, success: {}\n", .{message.payload.connect_response.success});
@@ -412,8 +420,6 @@ pub const GameClient = struct {
 
     fn sendToServer(self: *GameClient, message: Protocol.NetworkMessage) !void {
         if (self.socket == null or self.server_endpoint == null) return error.NotConnected;
-
-        // std.debug.print("Sending message to server\n", .{});
 
         const json = try std.json.stringifyAlloc(self.allocator, message, .{});
         defer self.allocator.free(json);
