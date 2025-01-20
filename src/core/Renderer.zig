@@ -131,8 +131,10 @@ pub const Renderer = struct {
 
     pub fn renderUI(game_state: *State.GameState) !void {
         if (game_state.entity_manager.getActiveEntity(game_state.player_id)) |player| {
+            const active_children = game_state.entity_manager.getActiveChildren(game_state.player_id);
+            defer game_state.allocator.free(active_children);
             // Render player info
-            try Renderer.drawDebugText(game_state, player, game_state.entity_manager.getActiveChildren(game_state.player_id).len);
+            try Renderer.drawDebugText(game_state, player, active_children.len);
         } else {
             ray.drawText("Connecting...", 10, 10, 20, ray.WHITE);
         }

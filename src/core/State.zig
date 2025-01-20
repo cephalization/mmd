@@ -224,6 +224,7 @@ pub const GameState = struct {
                 const player_entity = self.entity_manager.getActiveEntity(id);
                 if (player_entity) |player| {
                     const active_children = self.entity_manager.getActiveChildren(id);
+                    defer self.allocator.free(active_children);
 
                     // Update children positions
                     for (active_children) |child_id| {

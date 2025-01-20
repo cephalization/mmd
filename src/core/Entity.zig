@@ -129,14 +129,19 @@ pub const EntityManager = struct {
     pub fn getActiveChildren(self: *EntityManager, parent_id: usize) []const usize {
         // Filter out inactive children
         const children = &self.relationships.items[parent_id].children;
-        var active_count: usize = 0;
+        var temp_active = std.ArrayList(usize).init(self.allocator);
+        defer temp_active.deinit();
+
         for (children.items) |child_id| {
             if (self.entities.items(.active)[child_id]) {
-                children.items[active_count] = child_id;
-                active_count += 1;
+                temp_active.append(child_id) catch continue;
             }
         }
-        return children.items[0..active_count];
+
+        // Create a slice of the active children that will persist
+        const result = self.allocator.alloc(usize, temp_active.items.len) catch return &[_]usize{};
+        @memcpy(result, temp_active.items);
+        return result;
     }
 
     // Helper function to check if an entity is active
