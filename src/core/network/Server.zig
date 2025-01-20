@@ -288,7 +288,7 @@ pub const GameServer = struct {
                         self.game_state.entity_manager.deleteEntity(client.player_entity_id);
 
                         // Remove client
-                        _ = self.clients.remove(client_id);
+                        defer _ = self.clients.remove(client_id);
 
                         // Notify other clients
                         var leave_msg = Protocol.NetworkMessage.init(.player_left);
@@ -296,7 +296,7 @@ pub const GameServer = struct {
                             .client_id = client_id,
                             .player_entity_id = client.player_entity_id,
                         };
-                        try self.broadcast(leave_msg, client_id);
+                        try self.broadcast(leave_msg, null);
                     }
                 }
             },

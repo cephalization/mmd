@@ -34,7 +34,7 @@ const NetworkThread = struct {
             const delta_time = current_time - last_time;
             last_time = current_time;
             delta_accumulator += delta_time;
-            std.debug.print("Network thread waiting for message\n", .{});
+            // std.debug.print("Network thread waiting for message\n", .{});
             const receive_result = self.socket.receiveFrom(&buf) catch |err| {
                 if (err == error.WouldBlock) {
                     std.time.sleep(1 * std.time.ns_per_ms); // Sleep 1ms to avoid busy loop
@@ -49,7 +49,8 @@ const NetworkThread = struct {
                 break;
             }
 
-            std.debug.print("Received message\n", .{});
+            // std.debug.print("Received message\n", .{});
+
             if (receive_result.numberOfBytes == 0) continue;
 
             const message = std.json.parseFromSlice(Protocol.NetworkMessage, self.allocator, buf[0..receive_result.numberOfBytes], .{}) catch |err| {
@@ -57,6 +58,8 @@ const NetworkThread = struct {
                 continue;
             };
             defer message.deinit();
+
+            // std.debug.print("Received message type {}\n", .{message.value.type});
 
             self.client.handleMessage(message.value) catch |err| {
                 std.debug.print("Error handling message: {}\n", .{err});
