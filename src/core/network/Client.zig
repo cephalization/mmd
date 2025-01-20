@@ -233,7 +233,8 @@ pub const GameClient = struct {
     pub fn update(self: *GameClient, delta_time: f32, current_game_time: f64) !void {
         switch (self.mode) {
             .singleplayer => {
-                try self.game_state.update(delta_time, current_game_time);
+                try self.game_state.update(current_game_time);
+                try self.game_state.processStateEvents(delta_time, current_game_time);
             },
             .multiplayer => {
                 if (self.socket == null) return error.NotConnected;

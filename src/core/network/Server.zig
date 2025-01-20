@@ -86,6 +86,8 @@ pub const GameServer = struct {
     clients: std.AutoHashMap(u64, Client),
     socket: network.Socket,
     next_client_id: u64,
+    current_game_time_seconds: f64,
+    last_frame_time: i128,
     last_state_update: i128,
     state_update_rate: i128, // How often to send state updates (in nanoseconds)
     last_input_update: i128, // Track last input processing time
@@ -125,6 +127,8 @@ pub const GameServer = struct {
             .last_entity_states = std.AutoHashMap(usize, Protocol.NetworkEntity).init(allocator),
             .last_relationships = std.ArrayList(Protocol.NetworkRelationship).init(allocator),
             .entities_per_chunk = 10,
+            .current_game_time_seconds = 0,
+            .last_frame_time = std.time.nanoTimestamp(),
         };
 
         // Create network thread data
@@ -182,19 +186,25 @@ pub const GameServer = struct {
     pub fn start(self: *GameServer) !void {
         std.debug.print("Server starting main loop\n", .{});
 
-        var last_frame_time = std.time.nanoTimestamp();
         const target_frame_time: i128 = std.time.ns_per_s / 120; // Target 120 FPS
 
         while (true) {
             const current_time = std.time.nanoTimestamp();
-            last_frame_time = current_time;
+            self.last_frame_time = current_time;
+            // increment game time by time since last frame
+            self.current_game_time_seconds += @as(f64, @floatFromInt(current_time - self.last_frame_time)) / std.time.ns_per_s;
 
             // Only process inputs at fixed rate
             const time_since_last_input = current_time - self.last_input_update;
             if (time_since_last_input >= self.input_update_rate) {
                 // Use fixed delta time based on input rate instead of frame time
                 const fixed_delta = @as(f32, @floatFromInt(self.input_update_rate)) / std.time.ns_per_s;
-                try self.game_state.update(fixed_delta, @as(f64, @floatFromInt(current_time)));
+                // convert current time to seconds
+                const current_game_time_seconds = @as(f64, @floatFromInt(current_time)) / std.time.ns_per_s;
+                try self.game_state.update(
+                    current_game_time_seconds,
+                );
+                try self.game_state.processStateEvents(fixed_delta, current_game_time_seconds);
                 // Clear processed input events
                 self.game_state.input_manager.clearEvents();
                 self.last_input_update = current_time;

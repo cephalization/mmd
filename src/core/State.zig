@@ -15,6 +15,19 @@ pub const AVOIDANCE_WEIGHT: f32 = 0.5; // How strongly avoidance forces are appl
 pub const ATTRACTION_WEIGHT: f32 = 0.005; // How strongly objects are attracted to player
 pub const MIN_DISTANCE: f32 = 0.001; // Minimum distance to prevent division by zero
 
+pub const StateEvent = struct {
+    timestamp: f64,
+    source_player_id: usize,
+    data: union(enum) {
+        movement: struct {
+            x: f32,
+            y: f32,
+        },
+        spawn: bool,
+        marking_delete: bool,
+    },
+};
+
 pub const GameState = struct {
     entity_manager: Entity.EntityManager,
     input_manager: Input.InputManager,
@@ -29,6 +42,11 @@ pub const GameState = struct {
     allocator: std.mem.Allocator,
     is_client_mode: bool,
     player_directions: std.AutoHashMap(usize, ray.Vector2),
+    state_events: std.ArrayList(StateEvent),
+    state_events_per_second: usize,
+    last_state_events_update_time: f64,
+    last_input_events_update_time: f64,
+    input_events_per_second: usize,
 
     pub fn init(allocator: std.mem.Allocator, create_player: bool) !GameState {
         var state = GameState{
@@ -45,6 +63,11 @@ pub const GameState = struct {
             .allocator = allocator,
             .is_client_mode = false,
             .player_directions = std.AutoHashMap(usize, ray.Vector2).init(allocator),
+            .state_events = std.ArrayList(StateEvent).init(allocator),
+            .state_events_per_second = 0,
+            .last_state_events_update_time = 0,
+            .last_input_events_update_time = 0,
+            .input_events_per_second = 0,
         };
 
         if (create_player) {
@@ -69,95 +92,51 @@ pub const GameState = struct {
         self.player_directions.deinit();
         self.input_manager.deinit();
         self.entity_manager.deinit();
+        self.state_events.deinit();
     }
 
-    pub fn update(self: *GameState, delta_time: f32, current_game_time: f64) !void {
+    pub fn update(self: *GameState, current_game_time: f64) !void {
         // Reset flags at the start of the update
         // Wait for input to re-set them if they are still valid
         self.is_spawning = false;
         self.is_deleting = false;
         self.is_marking_delete = false;
 
-        // Clear all player directions - they will be set by movement events
-        self.player_directions.clearRetainingCapacity();
-
         // Poll for new input events
         try self.input_manager.pollLocalInput();
 
-        // Process all queued input events
+        // Process all queued input events into state events
         const events = self.input_manager.processEvents();
-        if (events.len > 0) {
-            std.debug.print("Processing {} input events\n", .{events.len});
+        // print count of input events processed in the last 5 seconds
+        if (current_game_time - self.last_input_events_update_time > 5.0) {
+            self.last_input_events_update_time = current_game_time;
+            std.debug.print("Processed {} input events in the last 5 seconds\n", .{self.input_events_per_second});
+            self.input_events_per_second = 0;
+        } else {
+            self.input_events_per_second += events.len;
         }
 
+        // Convert input events to state events
         for (events) |event| {
-            switch (event.data) {
-                .movement => |mov| {
-                    const target_player_id = if (event.source == .local) self.player_id else event.source_player_id;
-                    if (target_player_id >= self.entity_manager.entities.len) {
-                        std.debug.print("Warning: Invalid player_id {}, entities length {}\n", .{ target_player_id, self.entity_manager.entities.len });
-                        continue;
-                    }
-
-                    // Store movement direction
-                    try self.player_directions.put(target_player_id, .{ .x = mov.x, .y = mov.y });
+            try self.state_events.append(.{
+                .timestamp = event.timestamp,
+                .source_player_id = if (event.source == .local) self.player_id else event.source_player_id,
+                .data = switch (event.data) {
+                    .movement => |mov| .{ .movement = .{ .x = mov.x, .y = mov.y } },
+                    .spawn => |is_spawning| .{ .spawn = is_spawning },
+                    .marking_delete => |is_marking_delete| .{ .marking_delete = is_marking_delete },
                 },
-                .spawn => |is_spawning| {
-                    if (is_spawning) {
-                        self.is_spawning = true;
-                        const spawn_cooldown: f32 = 1.0 / 10.0;
-                        const current_time = event.timestamp;
-                        if (current_time - self.last_spawn_time > spawn_cooldown) {
-                            self.last_spawn_time = current_time;
-                            const target_player_id = if (event.source == .local) self.player_id else event.source_player_id;
-                            try self.spawnChildren(current_time, target_player_id);
-                        }
-                    } else {
-                        self.is_spawning = false;
-                    }
-                },
-                .marking_delete => |is_marking_delete| {
-                    self.is_marking_delete = is_marking_delete;
-                    const target_player_id = if (event.source == .local) self.player_id else event.source_player_id;
-                    if (is_marking_delete) {
-                        const mark_delete_cooldown: f32 = 1.0 / 50.0;
-                        const current_time = event.timestamp;
-                        if (current_time - self.last_mark_delete_time > mark_delete_cooldown) {
-                            self.last_mark_delete_time = current_time;
-                            // Mark first valid child as deleteable
-                            var next_index: usize = 0;
-                            while (next_index < self.entity_manager.relationships.items[target_player_id].children.items.len) {
-                                const child_id = self.entity_manager.relationships.items[target_player_id].children.items[next_index];
-                                if (self.entity_manager.entities.items(.deleteable)[child_id] == 0) {
-                                    self.entity_manager.entities.items(.deleteable)[child_id] = current_time;
-                                    break;
-                                }
-                                next_index += 1;
-                            }
-                        }
-                    }
-                },
-            }
+            });
         }
 
-        // Clear processed events
+        // Clear processed input events
         self.input_manager.clearEvents();
 
-        // Apply movement for all players based on their current direction
-        // const clamped_delta = @min(delta_time, 0.032); // Max 32ms frame time
-        var dir_it = self.player_directions.iterator();
-        while (dir_it.next()) |entry| {
-            const player_id = entry.key_ptr.*;
-            const direction = entry.value_ptr.*;
-            if (direction.x != 0 or direction.y != 0) {
-                self.entity_manager.entities.items(.position)[player_id].x += direction.x * PLAYER_MOVE_SPEED;
-                self.entity_manager.entities.items(.position)[player_id].y += direction.y * PLAYER_MOVE_SPEED;
-            }
-        }
+        // Note: We no longer process state events here
+        // The caller must explicitly call processStateEvents when ready
 
+        // Handle deletion cooldowns and cleanup
         var some_deleteable = false;
-
-        // get active deleteable entities
         const slice = self.entity_manager.entities.slice();
         for (slice.items(.active), slice.items(.deleteable)) |active, deleteable| {
             if (active and deleteable > 0) {
@@ -172,8 +151,6 @@ pub const GameState = struct {
             self.is_deleting = false;
         }
 
-        // Process deletions when there is any deleteable entity
-        // And marking delete is not active
         const delete_cooldown: f32 = 1.0 / 20.0;
         const can_delete = current_game_time - self.last_delete_time > delete_cooldown;
         if (self.is_deleting and can_delete) {
@@ -188,8 +165,70 @@ pub const GameState = struct {
                 }
             }
         }
+    }
 
-        // Update entity positions
+    pub fn processStateEvents(self: *GameState, delta_time: f32, current_time: f64) !void {
+        // print count of state events processed in the last 5 seconds
+        if (current_time - self.last_state_events_update_time > 5.0) {
+            self.last_state_events_update_time = current_time;
+            std.debug.print("Processed {} state events in the last 5 seconds\n", .{self.state_events_per_second});
+            self.state_events_per_second = 0;
+        } else {
+            self.state_events_per_second += self.state_events.items.len;
+        }
+
+        for (self.state_events.items) |event| {
+            switch (event.data) {
+                .movement => |mov| {
+                    const target_player_id = event.source_player_id;
+                    if (target_player_id >= self.entity_manager.entities.len) {
+                        std.debug.print("Warning: Invalid player_id {}, entities length {}\n", .{ target_player_id, self.entity_manager.entities.len });
+                        continue;
+                    }
+
+                    // Store movement direction
+                    try self.player_directions.put(target_player_id, .{ .x = mov.x, .y = mov.y });
+                },
+                .spawn => |is_spawning| {
+                    if (is_spawning) {
+                        self.is_spawning = true;
+                        const spawn_cooldown: f32 = 1.0 / 10.0;
+                        const event_time = event.timestamp;
+                        if (event_time - self.last_spawn_time > spawn_cooldown) {
+                            self.last_spawn_time = event_time;
+                            try self.spawnChildren(event_time, event.source_player_id);
+                        }
+                    } else {
+                        self.is_spawning = false;
+                    }
+                },
+                .marking_delete => |is_marking_delete| {
+                    self.is_marking_delete = is_marking_delete;
+                    if (is_marking_delete) {
+                        const mark_delete_cooldown: f32 = 1.0 / 50.0;
+                        const event_time = event.timestamp;
+                        if (event_time - self.last_mark_delete_time > mark_delete_cooldown) {
+                            self.last_mark_delete_time = event_time;
+                            // Mark first valid child as deleteable
+                            var next_index: usize = 0;
+                            while (next_index < self.entity_manager.relationships.items[event.source_player_id].children.items.len) {
+                                const child_id = self.entity_manager.relationships.items[event.source_player_id].children.items[next_index];
+                                if (self.entity_manager.entities.items(.deleteable)[child_id] == 0) {
+                                    self.entity_manager.entities.items(.deleteable)[child_id] = current_time;
+                                    break;
+                                }
+                                next_index += 1;
+                            }
+                        }
+                    }
+                },
+            }
+        }
+
+        // Clear processed state events
+        self.state_events.clearRetainingCapacity();
+
+        // Update physics and other time-based systems now that state events have been processed
         self.updateEntities(delta_time);
     }
 
@@ -217,7 +256,7 @@ pub const GameState = struct {
         }
     }
 
-    pub fn updateEntities(self: *GameState, delta_time: f32) void {
+    fn updateEntities(self: *GameState, delta_time: f32) void {
         // for all player entities, update their children
         for (self.entity_manager.entities.items(.entity_type), 0..self.entity_manager.entities.len) |entity_type, id| {
             if (entity_type == .player) {
@@ -225,6 +264,13 @@ pub const GameState = struct {
                 if (player_entity) |player| {
                     const active_children = self.entity_manager.getActiveChildren(id);
                     defer self.allocator.free(active_children);
+
+                    // update player position
+                    const player_direction = self.player_directions.get(id);
+                    if (player_direction) |direction| {
+                        self.entity_manager.entities.items(.position)[id].x += direction.x * PLAYER_MOVE_SPEED;
+                        self.entity_manager.entities.items(.position)[id].y += direction.y * PLAYER_MOVE_SPEED;
+                    }
 
                     // Update children positions
                     for (active_children) |child_id| {
@@ -276,6 +322,8 @@ pub const GameState = struct {
                 }
             }
         }
+
+        self.player_directions.clearRetainingCapacity();
     }
 
     pub fn createPlayerEntity(self: *GameState) !usize {
