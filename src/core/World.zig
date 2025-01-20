@@ -3,7 +3,8 @@ const ray = @import("../raylib.zig");
 const perlin = @import("perlin");
 const Camera = @import("Camera.zig");
 
-pub const GRID_SIZE: f32 = 100.0; // Size of each grid cell
+pub const GRID_SIZE: f32 = 100.0; // Size of each grid cell for rendering
+pub const PHYSICS_GRID_SIZE: f32 = 25.0; // Fixed size grid cell for physics (smaller for more precise collisions)
 pub const GRID_COLOR = ray.Color{ .r = 40, .g = 40, .b = 40, .a = 255 }; // Dark gray grid
 pub const BASE_NOISE_SCALE: f32 = 0.001; // Base scale factor for noise coordinates
 pub const NOISE_THRESHOLD: f32 = 0.0; // Threshold for filling squares
@@ -64,17 +65,19 @@ pub const World = struct {
         self.grid_lines_visible = !self.grid_lines_visible;
     }
 
-    pub fn queryPoint(self: *const World, point: ray.Vector2) TerrainType {
-        // Align point to grid cell center
-        const grid_x = @floor(point.x / GRID_SIZE) * GRID_SIZE + GRID_SIZE * 0.5;
-        const grid_y = @floor(point.y / GRID_SIZE) * GRID_SIZE + GRID_SIZE * 0.5;
+    fn getNoise(self: *const World, x: f32, y: f32) f32 {
+        const scaled_x = (x + self.noise_offset.x) * BASE_NOISE_SCALE;
+        const scaled_y = (y + self.noise_offset.y) * BASE_NOISE_SCALE;
+        return fbm(scaled_x, scaled_y, 0);
+    }
 
-        // Scale coordinates based on noise scale
-        const scaled_x = (grid_x + self.noise_offset.x) * BASE_NOISE_SCALE;
-        const scaled_y = (grid_y + self.noise_offset.y) * BASE_NOISE_SCALE;
+    pub fn queryPoint(self: *const World, point: ray.Vector2) TerrainType {
+        // For physics, we use a fixed grid size regardless of zoom
+        const grid_x = @floor(point.x / PHYSICS_GRID_SIZE) * PHYSICS_GRID_SIZE + PHYSICS_GRID_SIZE * 0.5;
+        const grid_y = @floor(point.y / PHYSICS_GRID_SIZE) * PHYSICS_GRID_SIZE + PHYSICS_GRID_SIZE * 0.5;
 
         // Get noise value for this point
-        const noise = fbm(scaled_x, scaled_y, 0);
+        const noise = self.getNoise(grid_x, grid_y);
 
         // Determine terrain type based on noise value
         if (noise > WALL_THRESHOLD) {
@@ -178,9 +181,6 @@ pub const World = struct {
         const start_y = @floor(top_left.y / GRID_SIZE) * GRID_SIZE;
         const end_y = @ceil(bottom_right.y / GRID_SIZE) * GRID_SIZE;
 
-        // Scale noise based on zoom level
-        const noise_scale = BASE_NOISE_SCALE * (1.0 / camera.zoom);
-
         // Draw grid squares with noise
         var y = start_y;
         while (y <= end_y) : (y += GRID_SIZE) {
@@ -190,10 +190,8 @@ pub const World = struct {
                 const center_x = x + GRID_SIZE * 0.5;
                 const center_y = y + GRID_SIZE * 0.5;
 
-                // Apply noise scale to both the coordinates and the offset together
-                const scaled_x = (center_x + self.noise_offset.x) * noise_scale;
-                const scaled_y = (center_y + self.noise_offset.y) * noise_scale;
-                const noise = fbm(scaled_x, scaled_y, 0);
+                // Get noise value using the shared function
+                const noise = self.getNoise(center_x, center_y);
 
                 // If noise is above threshold, fill the square
                 if (noise > NOISE_THRESHOLD) {
