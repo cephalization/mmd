@@ -17,6 +17,11 @@ pub const TerrainType = enum {
     Wall,
 };
 
+pub const GridCell = struct {
+    x: i32,
+    y: i32,
+};
+
 // Standard fBm parameters
 const OCTAVES: u32 = 3;
 const LACUNARITY: f32 = 1.0;
@@ -65,19 +70,36 @@ pub const World = struct {
         self.grid_lines_visible = !self.grid_lines_visible;
     }
 
-    fn getNoise(self: *const World, x: f32, y: f32) f32 {
-        const scaled_x = (x + self.noise_offset.x) * BASE_NOISE_SCALE;
-        const scaled_y = (y + self.noise_offset.y) * BASE_NOISE_SCALE;
+    // Get the grid cell coordinates for any world position
+    pub fn getGridCell(point: ray.Vector2) GridCell {
+        return .{
+            .x = @as(i32, @intFromFloat(@floor(point.x / GRID_SIZE))),
+            .y = @as(i32, @intFromFloat(@floor(point.y / GRID_SIZE))),
+        };
+    }
+
+    // Get the center point of a grid cell
+    pub fn getGridCellCenter(cell: GridCell) ray.Vector2 {
+        return .{
+            .x = @as(f32, @floatFromInt(cell.x)) * GRID_SIZE + GRID_SIZE * 0.5,
+            .y = @as(f32, @floatFromInt(cell.y)) * GRID_SIZE + GRID_SIZE * 0.5,
+        };
+    }
+
+    fn getNoise(self: *const World, point: ray.Vector2) f32 {
+        // Get the grid cell for this point
+        const cell = getGridCell(point);
+        const center = getGridCellCenter(cell);
+
+        // Scale for noise using the cell center
+        const scaled_x = (center.x + self.noise_offset.x) * BASE_NOISE_SCALE;
+        const scaled_y = (center.y + self.noise_offset.y) * BASE_NOISE_SCALE;
         return fbm(scaled_x, scaled_y, 0);
     }
 
     pub fn queryPoint(self: *const World, point: ray.Vector2) TerrainType {
-        // For physics, we use a fixed grid size regardless of zoom
-        const grid_x = @floor(point.x / PHYSICS_GRID_SIZE) * PHYSICS_GRID_SIZE + PHYSICS_GRID_SIZE * 0.5;
-        const grid_y = @floor(point.y / PHYSICS_GRID_SIZE) * PHYSICS_GRID_SIZE + PHYSICS_GRID_SIZE * 0.5;
-
         // Get noise value for this point
-        const noise = self.getNoise(grid_x, grid_y);
+        const noise = self.getNoise(point);
 
         // Determine terrain type based on noise value
         if (noise > WALL_THRESHOLD) {
@@ -175,28 +197,32 @@ pub const World = struct {
         const top_left = camera.screenToWorld(.{ .x = 0, .y = 0 });
         const bottom_right = camera.screenToWorld(.{ .x = @floatFromInt(window_width), .y = @floatFromInt(window_height) });
 
-        // Calculate grid start and end points
-        const start_x = @floor(top_left.x / GRID_SIZE) * GRID_SIZE;
-        const end_x = @ceil(bottom_right.x / GRID_SIZE) * GRID_SIZE;
-        const start_y = @floor(top_left.y / GRID_SIZE) * GRID_SIZE;
-        const end_y = @ceil(bottom_right.y / GRID_SIZE) * GRID_SIZE;
+        // Get grid cells that cover the view
+        const start_cell = getGridCell(top_left);
+        const end_cell = getGridCell(bottom_right);
 
-        // Draw grid squares with noise
-        var y = start_y;
-        while (y <= end_y) : (y += GRID_SIZE) {
-            var x = start_x;
-            while (x <= end_x) : (x += GRID_SIZE) {
-                // Get noise value for this grid cell
-                const center_x = x + GRID_SIZE * 0.5;
-                const center_y = y + GRID_SIZE * 0.5;
+        // Draw grid squares
+        var cell_y = start_cell.y;
+        while (cell_y <= end_cell.y) : (cell_y += 1) {
+            var cell_x = start_cell.x;
+            while (cell_x <= end_cell.x) : (cell_x += 1) {
+                const cell = GridCell{ .x = cell_x, .y = cell_y };
+                const cell_center = getGridCellCenter(cell);
+                const cell_top_left = ray.Vector2{
+                    .x = @as(f32, @floatFromInt(cell_x)) * GRID_SIZE,
+                    .y = @as(f32, @floatFromInt(cell_y)) * GRID_SIZE,
+                };
 
                 // Get noise value using the shared function
-                const noise = self.getNoise(center_x, center_y);
+                const noise = self.getNoise(cell_center);
 
                 // If noise is above threshold, fill the square
                 if (noise > NOISE_THRESHOLD) {
-                    const top_left_screen = camera.worldToScreen(.{ .x = x, .y = y });
-                    const bottom_right_screen = camera.worldToScreen(.{ .x = x + GRID_SIZE, .y = y + GRID_SIZE });
+                    const top_left_screen = camera.worldToScreen(cell_top_left);
+                    const bottom_right_screen = camera.worldToScreen(.{
+                        .x = cell_top_left.x + GRID_SIZE,
+                        .y = cell_top_left.y + GRID_SIZE,
+                    });
 
                     // Use noise value to determine color intensity and whether it's a wall
                     const intensity = @as(u8, @intFromFloat(noise * 255));
@@ -216,28 +242,37 @@ pub const World = struct {
 
                 // Draw grid lines if enabled
                 if (self.grid_lines_visible) {
-                    const start_pos_v = camera.worldToScreen(.{ .x = x, .y = y });
-                    const end_pos_v = camera.worldToScreen(.{ .x = x, .y = y + GRID_SIZE });
+                    const start_pos_v = camera.worldToScreen(cell_top_left);
+                    const end_pos_v = camera.worldToScreen(.{
+                        .x = cell_top_left.x,
+                        .y = cell_top_left.y + GRID_SIZE,
+                    });
                     ray.drawLineEx(.{ .x = start_pos_v.x, .y = start_pos_v.y }, .{ .x = end_pos_v.x, .y = end_pos_v.y }, 1.0, GRID_COLOR);
-                }
-            }
 
-            // Draw horizontal lines if enabled
-            if (self.grid_lines_visible) {
-                const start_pos_h = camera.worldToScreen(.{ .x = start_x, .y = y });
-                const end_pos_h = camera.worldToScreen(.{ .x = end_x, .y = y });
-                ray.drawLineEx(.{ .x = start_pos_h.x, .y = start_pos_h.y }, .{ .x = end_pos_h.x, .y = end_pos_h.y }, 1.0, GRID_COLOR);
+                    const start_pos_h = camera.worldToScreen(cell_top_left);
+                    const end_pos_h = camera.worldToScreen(.{
+                        .x = cell_top_left.x + GRID_SIZE,
+                        .y = cell_top_left.y,
+                    });
+                    ray.drawLineEx(.{ .x = start_pos_h.x, .y = start_pos_h.y }, .{ .x = end_pos_h.x, .y = end_pos_h.y }, 1.0, GRID_COLOR);
+                }
             }
         }
 
-        // Draw final vertical lines if enabled
+        // Draw final grid lines if enabled
         if (self.grid_lines_visible) {
-            var x = start_x;
-            while (x <= end_x) : (x += GRID_SIZE) {
-                const start_pos = camera.worldToScreen(.{ .x = x, .y = start_y });
-                const end_pos = camera.worldToScreen(.{ .x = x, .y = end_y });
-                ray.drawLineEx(.{ .x = start_pos.x, .y = start_pos.y }, .{ .x = end_pos.x, .y = end_pos.y }, 1.0, GRID_COLOR);
-            }
+            const final_x = @as(f32, @floatFromInt(end_cell.x + 1)) * GRID_SIZE;
+            const final_y = @as(f32, @floatFromInt(end_cell.y + 1)) * GRID_SIZE;
+            const start_y = @as(f32, @floatFromInt(start_cell.y)) * GRID_SIZE;
+            const start_x = @as(f32, @floatFromInt(start_cell.x)) * GRID_SIZE;
+
+            const start_pos = camera.worldToScreen(.{ .x = final_x, .y = start_y });
+            const end_pos = camera.worldToScreen(.{ .x = final_x, .y = final_y });
+            ray.drawLineEx(.{ .x = start_pos.x, .y = start_pos.y }, .{ .x = end_pos.x, .y = end_pos.y }, 1.0, GRID_COLOR);
+
+            const start_pos_h = camera.worldToScreen(.{ .x = start_x, .y = final_y });
+            const end_pos_h = camera.worldToScreen(.{ .x = final_x, .y = final_y });
+            ray.drawLineEx(.{ .x = start_pos_h.x, .y = start_pos_h.y }, .{ .x = end_pos_h.x, .y = end_pos_h.y }, 1.0, GRID_COLOR);
         }
     }
 };
