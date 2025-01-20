@@ -7,7 +7,14 @@ pub const GRID_SIZE: f32 = 100.0; // Size of each grid cell
 pub const GRID_COLOR = ray.Color{ .r = 40, .g = 40, .b = 40, .a = 255 }; // Dark gray grid
 pub const BASE_NOISE_SCALE: f32 = 0.001; // Base scale factor for noise coordinates
 pub const NOISE_THRESHOLD: f32 = 0.0; // Threshold for filling squares
+pub const WALL_THRESHOLD: f32 = 0.3; // Threshold for wall collision
 pub const FILL_COLOR = ray.Color{ .r = 30, .g = 30, .b = 50, .a = 255 }; // Dark blue-ish fill
+
+pub const TerrainType = enum {
+    Empty,
+    Ground,
+    Wall,
+};
 
 // Standard fBm parameters
 const OCTAVES: u32 = 3;
@@ -47,10 +54,117 @@ pub const World = struct {
         };
     }
 
-    pub fn update(_: *World) void {}
+    pub fn update(self: *World) void {
+        // Slowly move noise pattern
+        self.noise_offset.x += 0.1 * ray.getFrameTime();
+        self.noise_offset.y += 0.05 * ray.getFrameTime();
+    }
 
     pub fn toggleGridLines(self: *World) void {
         self.grid_lines_visible = !self.grid_lines_visible;
+    }
+
+    pub fn queryPoint(self: *const World, point: ray.Vector2) TerrainType {
+        // Align point to grid cell center
+        const grid_x = @floor(point.x / GRID_SIZE) * GRID_SIZE + GRID_SIZE * 0.5;
+        const grid_y = @floor(point.y / GRID_SIZE) * GRID_SIZE + GRID_SIZE * 0.5;
+
+        // Scale coordinates based on noise scale
+        const scaled_x = (grid_x + self.noise_offset.x) * BASE_NOISE_SCALE;
+        const scaled_y = (grid_y + self.noise_offset.y) * BASE_NOISE_SCALE;
+
+        // Get noise value for this point
+        const noise = fbm(scaled_x, scaled_y, 0);
+
+        // Determine terrain type based on noise value
+        if (noise > WALL_THRESHOLD) {
+            return .Wall;
+        } else if (noise > NOISE_THRESHOLD) {
+            return .Ground;
+        } else {
+            return .Empty;
+        }
+    }
+
+    pub fn queryLine(self: *const World, start: ray.Vector2, end: ray.Vector2, radius: f32, steps: u32) TerrainType {
+        // Calculate movement direction
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const length = @sqrt(dx * dx + dy * dy);
+
+        // If no movement, just check the circle at the current position
+        if (length < 0.0001) {
+            // Check points around the circle
+            const check_points: u32 = 8; // Number of points to check around the circle
+            for (0..check_points) |i| {
+                const angle = (@as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(check_points))) * std.math.tau;
+                const check_point = ray.Vector2{
+                    .x = start.x + radius * @cos(angle),
+                    .y = start.y + radius * @sin(angle),
+                };
+                const terrain = self.queryPoint(check_point);
+                if (terrain == .Wall) {
+                    return .Wall;
+                }
+            }
+            return .Empty;
+        }
+
+        // Normalize direction
+        const dir_x = dx / length;
+        const dir_y = dy / length;
+
+        // Calculate perpendicular vector for radius checks
+        const perp_x = -dir_y;
+        const perp_y = dir_x;
+
+        // Sample points along the line
+        const step_size = length / @as(f32, @floatFromInt(steps));
+        var highest_terrain: TerrainType = .Empty;
+
+        var i: u32 = 0;
+        while (i <= steps) : (i += 1) {
+            const t = @as(f32, @floatFromInt(i)) * step_size;
+            const center = ray.Vector2{
+                .x = start.x + dir_x * t,
+                .y = start.y + dir_y * t,
+            };
+
+            // Check center point
+            const center_terrain = self.queryPoint(center);
+            if (center_terrain == .Wall) {
+                return .Wall;
+            }
+
+            // Check points on either side of the movement path at the entity's radius
+            const left = ray.Vector2{
+                .x = center.x + perp_x * radius,
+                .y = center.y + perp_y * radius,
+            };
+            const right = ray.Vector2{
+                .x = center.x - perp_x * radius,
+                .y = center.y - perp_y * radius,
+            };
+
+            const left_terrain = self.queryPoint(left);
+            const right_terrain = self.queryPoint(right);
+
+            if (left_terrain == .Wall or right_terrain == .Wall) {
+                return .Wall;
+            }
+
+            // Keep track of highest density terrain found
+            if (@intFromEnum(left_terrain) > @intFromEnum(highest_terrain)) {
+                highest_terrain = left_terrain;
+            }
+            if (@intFromEnum(right_terrain) > @intFromEnum(highest_terrain)) {
+                highest_terrain = right_terrain;
+            }
+            if (@intFromEnum(center_terrain) > @intFromEnum(highest_terrain)) {
+                highest_terrain = center_terrain;
+            }
+        }
+        return highest_terrain;
     }
 
     pub fn draw(self: *const World, camera: *const Camera.Camera, window_width: i32, window_height: i32) void {
@@ -86,14 +200,12 @@ pub const World = struct {
                     const top_left_screen = camera.worldToScreen(.{ .x = x, .y = y });
                     const bottom_right_screen = camera.worldToScreen(.{ .x = x + GRID_SIZE, .y = y + GRID_SIZE });
 
-                    // Use noise value to determine color intensity
+                    // Use noise value to determine color intensity and whether it's a wall
                     const intensity = @as(u8, @intFromFloat(noise * 255));
-                    const color = ray.Color{
-                        .r = 30,
-                        .g = 30,
-                        .b = intensity,
-                        .a = 255,
-                    };
+                    const color = if (noise > WALL_THRESHOLD)
+                        ray.Color{ .r = 60, .g = 60, .b = intensity, .a = 255 } // Brighter for walls
+                    else
+                        ray.Color{ .r = 30, .g = 30, .b = intensity, .a = 255 }; // Normal ground
 
                     ray.drawRectangle(
                         @as(i32, @intFromFloat(top_left_screen.x)),

@@ -1,12 +1,19 @@
 const std = @import("std");
 const ray = @import("../raylib.zig");
 const Entity = @import("Entity.zig");
+const World = @import("World.zig");
+
+pub const CollisionShape = union(enum) {
+    circle: struct {
+        radius: f32,
+    },
+    // Can add more shapes like rectangle, polygon etc. in the future
+};
 
 pub const PhysicsComponent = struct {
     velocity: ray.Vector2 = .{ .x = 0, .y = 0 },
     mass: f32 = 1.0,
-    // Circular collision for simplicity
-    radius: f32 = 16.0,
+    shape: CollisionShape,
     // Damping to simulate friction/drag
     damping: f32 = 0.98,
 };
@@ -34,7 +41,27 @@ pub const PhysicsSystem = struct {
         _ = self.components.remove(entity_id);
     }
 
-    pub fn step(self: *PhysicsSystem, entity_manager: *Entity.EntityManager, dt: f32) void {
+    fn checkCollision(shape: CollisionShape, pos: ray.Vector2, world: *const World.World) bool {
+        switch (shape) {
+            .circle => |circle| {
+                // Check points around the circle
+                const check_points: u32 = 8; // Number of points to check around the circle
+                for (0..check_points) |i| {
+                    const angle = (@as(f32, @floatFromInt(i)) / @as(f32, @floatFromInt(check_points))) * std.math.tau;
+                    const check_point = ray.Vector2{
+                        .x = pos.x + circle.radius * @cos(angle),
+                        .y = pos.y + circle.radius * @sin(angle),
+                    };
+                    if (world.queryPoint(check_point) == .Wall) {
+                        return true;
+                    }
+                }
+                return false;
+            },
+        }
+    }
+
+    pub fn step(self: *PhysicsSystem, entity_manager: *Entity.EntityManager, world: *const World.World, dt: f32) void {
         var iter = self.components.iterator();
         while (iter.next()) |entry| {
             const entity_id = entry.key_ptr.*;
@@ -48,11 +75,22 @@ pub const PhysicsSystem = struct {
             physics.velocity.x *= damping_factor;
             physics.velocity.y *= damping_factor;
 
-            // Update position with fixed timestep
+            // Calculate next position
             var entity = entity_manager.entities.get(entity_id);
-            entity.position.x += physics.velocity.x * dt;
-            entity.position.y += physics.velocity.y * dt;
-            entity_manager.entities.set(entity_id, entity);
+            const next_pos = ray.Vector2{
+                .x = entity.position.x + physics.velocity.x * dt,
+                .y = entity.position.y + physics.velocity.y * dt,
+            };
+
+            // Check for wall collisions
+            if (checkCollision(physics.shape, next_pos, world)) {
+                // If we hit a wall, stop movement in that direction
+                physics.velocity = .{ .x = 0, .y = 0 };
+            } else {
+                // Update position if no wall collision
+                entity.position = next_pos;
+                entity_manager.entities.set(entity_id, entity);
+            }
 
             // Handle collisions with other entities
             var other_iter = self.components.iterator();
@@ -68,7 +106,13 @@ pub const PhysicsSystem = struct {
                 const dx = entity.position.x - other_entity.position.x;
                 const dy = entity.position.y - other_entity.position.y;
                 const distance = @sqrt(dx * dx + dy * dy);
-                const min_distance = physics.radius + other_physics.radius;
+
+                // Get minimum distance based on collision shapes
+                const min_distance = switch (physics.shape) {
+                    .circle => |circle| switch (other_physics.shape) {
+                        .circle => |other_circle| circle.radius + other_circle.radius,
+                    },
+                };
 
                 // Check for collision
                 if (distance < min_distance) {

@@ -99,7 +99,7 @@ pub const GameState = struct {
             try state.physics_system.addComponent(state.player_id, .{
                 .velocity = .{ .x = 0, .y = 0 },
                 .mass = 1.0,
-                .radius = 16.0,
+                .shape = .{ .circle = .{ .radius = 16.0 } },
                 .damping = 0.95,
             });
         }
@@ -163,7 +163,7 @@ pub const GameState = struct {
             // First update entity forces and behaviors
             self.updateEntities(PHYSICS_TIMESTEP);
             // Then run physics simulation step
-            self.physics_system.step(&self.entity_manager, PHYSICS_TIMESTEP);
+            self.physics_system.step(&self.entity_manager, &self.world, PHYSICS_TIMESTEP);
             self.physics_time_accumulator -= PHYSICS_TIMESTEP;
         }
 
@@ -269,7 +269,7 @@ pub const GameState = struct {
             // First update entity forces and behaviors
             self.updateEntities(PHYSICS_TIMESTEP);
             // Then run physics simulation step
-            self.physics_system.step(&self.entity_manager, PHYSICS_TIMESTEP);
+            self.physics_system.step(&self.entity_manager, &self.world, PHYSICS_TIMESTEP);
             self.physics_time_accumulator -= PHYSICS_TIMESTEP;
         }
     }
@@ -299,7 +299,7 @@ pub const GameState = struct {
                 try self.physics_system.addComponent(child_id, .{
                     .velocity = .{ .x = 0, .y = 0 },
                     .mass = 0.5,
-                    .radius = 8.0,
+                    .shape = .{ .circle = .{ .radius = 8.0 } },
                     .damping = 0.95,
                 });
             }
@@ -333,7 +333,7 @@ pub const GameState = struct {
                             self.physics_system.addComponent(child_id, .{
                                 .velocity = .{ .x = 0, .y = 0 },
                                 .mass = 0.5, // Children are lighter than players
-                                .radius = 8.0, // Children are smaller than players
+                                .shape = .{ .circle = .{ .radius = 8.0 } },
                                 .damping = 0.95,
                             }) catch continue;
                         }
@@ -423,7 +423,7 @@ pub const GameState = struct {
         try self.physics_system.addComponent(player_id, .{
             .velocity = .{ .x = 0, .y = 0 },
             .mass = 1.0,
-            .radius = 16.0,
+            .shape = .{ .circle = .{ .radius = 16.0 } },
             .damping = 0.95,
         });
 
