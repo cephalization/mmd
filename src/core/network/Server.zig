@@ -80,6 +80,106 @@ const NetworkThread = struct {
     }
 };
 
+// Message queue entry for outgoing messages
+const OutgoingMessage = struct {
+    endpoint: network.EndPoint,
+    data: []const u8,
+
+    pub fn deinit(self: *OutgoingMessage, allocator: std.mem.Allocator) void {
+        allocator.free(self.data);
+    }
+};
+
+const SenderThread = struct {
+    socket: network.Socket,
+    allocator: std.mem.Allocator,
+    server: *GameServer,
+    should_stop: std.atomic.Value(bool),
+    message_queue: std.ArrayList(OutgoingMessage),
+    mutex: std.Thread.Mutex,
+
+    fn init(allocator: std.mem.Allocator, socket: network.Socket, server: *GameServer) !*SenderThread {
+        const sender = try allocator.create(SenderThread);
+        sender.* = .{
+            .socket = socket,
+            .allocator = allocator,
+            .server = server,
+            .should_stop = std.atomic.Value(bool).init(false),
+            .message_queue = std.ArrayList(OutgoingMessage).init(allocator),
+            .mutex = std.Thread.Mutex{},
+        };
+        return sender;
+    }
+
+    fn deinit(self: *SenderThread) void {
+        // Clean up any remaining messages in the queue
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        for (self.message_queue.items) |*msg| {
+            msg.deinit(self.allocator);
+        }
+        self.message_queue.deinit();
+        self.allocator.destroy(self);
+    }
+
+    fn run(self: *SenderThread) !void {
+        var messages_per_second: u32 = 0;
+        var last_time = std.time.nanoTimestamp();
+        var delta_accumulator: i128 = 0;
+
+        while (!self.should_stop.load(.acquire)) {
+            const current_time = std.time.nanoTimestamp();
+            const delta_time = current_time - last_time;
+            last_time = current_time;
+            delta_accumulator += delta_time;
+
+            // Process all messages in the queue
+            self.mutex.lock();
+            const messages = self.message_queue.items;
+            if (messages.len > 0) {
+                for (messages) |msg| {
+                    _ = self.socket.sendTo(msg.endpoint, msg.data) catch |err| {
+                        std.debug.print("Error sending message: {}\n", .{err});
+                        continue;
+                    };
+                    messages_per_second += 1;
+                }
+
+                // Clean up sent messages
+                for (messages) |*msg| {
+                    msg.deinit(self.allocator);
+                }
+                self.message_queue.clearRetainingCapacity();
+            }
+            self.mutex.unlock();
+
+            // Print stats every second
+            if (delta_accumulator >= std.time.ns_per_s) {
+                std.debug.print("Messages sent per second: {}\n", .{messages_per_second});
+                messages_per_second = 0;
+                delta_accumulator = 0;
+            }
+
+            // Small sleep to avoid busy loop if queue is empty
+            if (messages.len == 0) {
+                std.time.sleep(100 * std.time.ns_per_us); // 100 microseconds
+            }
+        }
+    }
+
+    fn queueMessage(self: *SenderThread, endpoint: network.EndPoint, data: []const u8) !void {
+        const msg_data = try self.allocator.dupe(u8, data);
+        const msg = OutgoingMessage{
+            .endpoint = endpoint,
+            .data = msg_data,
+        };
+
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        try self.message_queue.append(msg);
+    }
+};
+
 pub const GameServer = struct {
     allocator: std.mem.Allocator,
     game_state: State.GameState,
@@ -94,6 +194,8 @@ pub const GameServer = struct {
     input_update_rate: i128, // How often to process inputs (in nanoseconds)
     network_thread: ?std.Thread = null,
     network_thread_data: ?*NetworkThread = null,
+    sender_thread: ?std.Thread = null,
+    sender_thread_data: ?*SenderThread = null,
     last_entity_states: std.AutoHashMap(usize, Protocol.NetworkEntity),
     last_relationships: std.ArrayList(Protocol.NetworkRelationship),
     entities_per_chunk: u32 = 10, // Number of entities to send in each initial state chunk
@@ -124,6 +226,8 @@ pub const GameServer = struct {
             .input_update_rate = std.time.ns_per_s / 60, // 60 Hz input processing (16.6ms)
             .network_thread = null,
             .network_thread_data = null,
+            .sender_thread = null,
+            .sender_thread_data = null,
             .last_entity_states = std.AutoHashMap(usize, Protocol.NetworkEntity).init(allocator),
             .last_relationships = std.ArrayList(Protocol.NetworkRelationship).init(allocator),
             .entities_per_chunk = 10,
@@ -140,16 +244,34 @@ pub const GameServer = struct {
             .should_stop = std.atomic.Value(bool).init(false),
         };
 
+        // Create sender thread data
+        const sender_data = try SenderThread.init(allocator, socket, server);
+
         // Start network thread
         server.network_thread = try std.Thread.spawn(.{}, NetworkThread.run, .{thread_data});
         server.network_thread_data = thread_data;
+
+        // Start sender thread
+        server.sender_thread = try std.Thread.spawn(.{}, SenderThread.run, .{sender_data});
+        server.sender_thread_data = sender_data;
 
         return server;
     }
 
     pub fn deinit(self: *GameServer) void {
+        // Stop sender thread first
+        if (self.sender_thread_data) |thread_data| {
+            thread_data.should_stop.store(true, .release);
+            if (self.sender_thread) |thread| {
+                thread.join();
+            }
+            thread_data.deinit();
+            self.sender_thread_data = null;
+            self.sender_thread = null;
+        }
+
+        // Stop network thread
         if (self.network_thread_data) |thread_data| {
-            // Signal thread to stop and wait for it
             thread_data.should_stop.store(true, .release);
             if (self.network_thread) |thread| {
                 thread.join();
@@ -525,10 +647,14 @@ pub const GameServer = struct {
 
     fn sendTo(self: *GameServer, endpoint: network.EndPoint, message: Protocol.NetworkMessage) !void {
         const json = try std.json.stringifyAlloc(self.allocator, message, .{});
-        defer self.allocator.free(json);
+        errdefer self.allocator.free(json);
 
-        // std.debug.print("Sending {} bytes to {}\n", .{ json.len, endpoint });
-        _ = try self.socket.sendTo(endpoint, json);
+        if (self.sender_thread_data) |sender| {
+            try sender.queueMessage(endpoint, json);
+        } else {
+            defer self.allocator.free(json);
+            _ = try self.socket.sendTo(endpoint, json);
+        }
     }
 
     fn startInitialStateStream(self: *GameServer, client_id: u64) !void {
