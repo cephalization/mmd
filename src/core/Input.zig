@@ -30,6 +30,8 @@ pub const InputManager = struct {
     state: InputState,
     event_queue: std.ArrayList(InputEvent),
     player_id: usize,
+    last_movement_time: f64 = 0,
+    movement_rate: f64 = 1.0 / 60.0, // 60 Hz movement input rate
 
     pub fn init() InputManager {
         return .{
@@ -40,6 +42,8 @@ pub const InputManager = struct {
             },
             .event_queue = std.ArrayList(InputEvent).init(std.heap.page_allocator),
             .player_id = 0,
+            .last_movement_time = 0,
+            .movement_rate = 1.0 / 60.0,
         };
     }
 
@@ -76,7 +80,7 @@ pub const InputManager = struct {
         const was_moving = self.state.direction.x != 0 or self.state.direction.y != 0;
         const is_moving = new_direction.x != 0 or new_direction.y != 0;
 
-        if (is_moving or was_moving) {
+        if ((is_moving or was_moving) and current_time - self.last_movement_time >= self.movement_rate) {
             try self.event_queue.append(.{
                 .source = .local,
                 .timestamp = current_time,
@@ -88,6 +92,7 @@ pub const InputManager = struct {
                     },
                 },
             });
+            self.last_movement_time = current_time;
         }
 
         self.state.direction = new_direction;

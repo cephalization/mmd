@@ -88,6 +88,8 @@ pub const GameServer = struct {
     next_client_id: u64,
     last_state_update: i128,
     state_update_rate: i128, // How often to send state updates (in nanoseconds)
+    last_input_update: i128, // Track last input processing time
+    input_update_rate: i128, // How often to process inputs (in nanoseconds)
     network_thread: ?std.Thread = null,
     network_thread_data: ?*NetworkThread = null,
     last_entity_states: std.AutoHashMap(usize, Protocol.NetworkEntity),
@@ -116,6 +118,8 @@ pub const GameServer = struct {
             .next_client_id = 1,
             .last_state_update = std.time.nanoTimestamp(),
             .state_update_rate = std.time.ns_per_s / 20, // 20 Hz state updates (50ms)
+            .last_input_update = std.time.nanoTimestamp(),
+            .input_update_rate = std.time.ns_per_s / 60, // 60 Hz input processing (16.6ms)
             .network_thread = null,
             .network_thread_data = null,
             .last_entity_states = std.AutoHashMap(usize, Protocol.NetworkEntity).init(allocator),
@@ -183,12 +187,18 @@ pub const GameServer = struct {
 
         while (true) {
             const current_time = std.time.nanoTimestamp();
-            const frame_time = current_time - last_frame_time;
             last_frame_time = current_time;
 
-            // First update game state to process any pending input events
-            const delta_time = @as(f32, @floatFromInt(frame_time)) / std.time.ns_per_s;
-            try self.game_state.update(delta_time, @as(f64, @floatFromInt(current_time)));
+            // Only process inputs at fixed rate
+            const time_since_last_input = current_time - self.last_input_update;
+            if (time_since_last_input >= self.input_update_rate) {
+                // Use fixed delta time based on input rate instead of frame time
+                const fixed_delta = @as(f32, @floatFromInt(self.input_update_rate)) / std.time.ns_per_s;
+                try self.game_state.update(fixed_delta, @as(f64, @floatFromInt(current_time)));
+                // Clear processed input events
+                self.game_state.input_manager.clearEvents();
+                self.last_input_update = current_time;
+            }
 
             // Then send state updates if needed
             const time_since_last_update = current_time - self.last_state_update;
@@ -400,20 +410,61 @@ pub const GameServer = struct {
         }
 
         // Track relationship changes
-        self.last_relationships.clearRetainingCapacity();
-        for (self.game_state.entity_manager.relationships.items) |rel| {
-            var update_msg = Protocol.NetworkMessage.init(.relationship_updated);
-            update_msg.payload.relationship_updated = .{
-                .parent_id = rel.parent_id,
-                .children = try self.allocator.dupe(usize, rel.children.items),
-            };
-            try self.broadcastToInitializedClients(update_msg, null);
+        var relationships_changed = false;
 
-            // Store current state
-            try self.last_relationships.append(.{
-                .parent_id = rel.parent_id,
-                .children = try self.allocator.dupe(usize, rel.children.items),
-            });
+        // First check if number of relationships changed
+        if (self.last_relationships.items.len != self.game_state.entity_manager.relationships.items.len) {
+            relationships_changed = true;
+        } else {
+            // Check each relationship for changes
+            outer: for (self.game_state.entity_manager.relationships.items) |rel| {
+                // Find matching relationship in last state
+                for (self.last_relationships.items) |last_rel| {
+                    if (last_rel.parent_id == rel.parent_id) {
+                        // Check if children array length changed
+                        if (last_rel.children.len != rel.children.items.len) {
+                            relationships_changed = true;
+                            break :outer;
+                        }
+                        // Check if any children changed
+                        for (rel.children.items, last_rel.children) |child, last_child| {
+                            if (child != last_child) {
+                                relationships_changed = true;
+                                break :outer;
+                            }
+                        }
+                        continue :outer;
+                    }
+                }
+                // If we get here, this is a new relationship
+                relationships_changed = true;
+                break;
+            }
+        }
+
+        // Only send updates and update last state if changes detected
+        if (relationships_changed) {
+            // Clear last relationships
+            for (self.last_relationships.items) |*rel| {
+                self.allocator.free(rel.children);
+            }
+            self.last_relationships.clearRetainingCapacity();
+
+            // Send updates and store new state
+            for (self.game_state.entity_manager.relationships.items) |rel| {
+                var update_msg = Protocol.NetworkMessage.init(.relationship_updated);
+                update_msg.payload.relationship_updated = .{
+                    .parent_id = rel.parent_id,
+                    .children = try self.allocator.dupe(usize, rel.children.items),
+                };
+                try self.broadcastToInitializedClients(update_msg, null);
+
+                // Store current state
+                try self.last_relationships.append(.{
+                    .parent_id = rel.parent_id,
+                    .children = try self.allocator.dupe(usize, rel.children.items),
+                });
+            }
         }
     }
 
