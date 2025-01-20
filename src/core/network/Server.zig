@@ -280,8 +280,10 @@ pub const GameServer = struct {
             },
 
             .disconnect => {
+                std.debug.print("Received disconnect message\n", .{});
                 if (message.payload.disconnect.client_id) |client_id| {
                     if (self.clients.get(client_id)) |client| {
+                        std.debug.print("Removing player entity {}\n", .{client.player_entity_id});
                         // Remove player entity
                         self.game_state.entity_manager.deleteEntity(client.player_entity_id);
 

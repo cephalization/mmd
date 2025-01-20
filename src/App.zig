@@ -18,7 +18,9 @@ pub const App = struct {
     }
 
     pub fn deinit(self: *App) void {
+        // First deinit the client to send disconnect message and cleanup network resources
         self.client.deinit();
+        // Then deinit the renderer
         self.renderer.deinit();
     }
 

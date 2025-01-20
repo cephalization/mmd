@@ -34,6 +34,7 @@ const NetworkThread = struct {
             const delta_time = current_time - last_time;
             last_time = current_time;
             delta_accumulator += delta_time;
+            std.debug.print("Network thread waiting for message\n", .{});
             const receive_result = self.socket.receiveFrom(&buf) catch |err| {
                 if (err == error.WouldBlock) {
                     std.time.sleep(1 * std.time.ns_per_ms); // Sleep 1ms to avoid busy loop
@@ -43,6 +44,12 @@ const NetworkThread = struct {
                 return err;
             };
 
+            if (self.should_stop.load(.acquire)) {
+                std.debug.print("Network thread received should_stop signal\n", .{});
+                break;
+            }
+
+            std.debug.print("Received message\n", .{});
             if (receive_result.numberOfBytes == 0) continue;
 
             const message = std.json.parseFromSlice(Protocol.NetworkMessage, self.allocator, buf[0..receive_result.numberOfBytes], .{}) catch |err| {
@@ -63,6 +70,7 @@ const NetworkThread = struct {
                 messages_per_second += 1;
             }
         }
+        std.debug.print("Network thread stopped\n", .{});
     }
 };
 
@@ -110,30 +118,51 @@ pub const GameClient = struct {
     }
 
     pub fn deinit(self: *GameClient) void {
+        std.debug.print("Deinitializing GameClient\n", .{});
+        // First stop the network thread if it exists
         if (self.network_thread_data) |thread_data| {
-            // Signal thread to stop and wait for it
             thread_data.should_stop.store(true, .release);
-            if (self.network_thread) |thread| {
-                thread.join();
-            }
-            // Close socket only once since it's shared
-            if (self.socket) |socket| {
-                socket.close();
-                self.socket = null;
-            }
-            self.allocator.destroy(thread_data);
-            self.network_thread_data = null;
-            self.network_thread = null;
-        } else if (self.socket) |socket| {
-            // Only close if not already closed by thread cleanup
+        }
+        std.debug.print("Network thread data updated with should_stop\n", .{});
+
+        // Unblock the network thread
+
+        // Try to send disconnect message if connected
+        if (self.mode == .multiplayer and self.connection_state == .connected) {
+            var msg = Protocol.NetworkMessage.init(.disconnect);
+            msg.payload.disconnect.client_id = self.client_id;
+            self.sendToServer(msg) catch |err| {
+                std.debug.print("Error sending disconnect message: {}\n", .{err});
+            };
+        }
+        std.debug.print("Disconnect message sent\n", .{});
+
+        // Wait for network thread
+        std.debug.print("Waiting for network thread to join\n", .{});
+        if (self.network_thread) |thread| {
+            thread.join();
+        }
+        std.debug.print("Network thread joined\n", .{});
+
+        // Cleanup network resources, this should let the network thread proceed
+        if (self.socket) |socket| {
             socket.close();
             self.socket = null;
         }
+        std.debug.print("Socket closed\n", .{});
+
+        if (self.network_thread_data) |thread_data| {
+            self.allocator.destroy(thread_data);
+            self.network_thread_data = null;
+            self.network_thread = null;
+        }
+        std.debug.print("Network thread data destroyed\n", .{});
 
         // Clear any remaining entities before deinit
         if (self.game_state.entity_manager.entities.len > 0) {
             self.game_state.entity_manager.entities.clearAndFree(self.allocator);
         }
+        std.debug.print("Entities cleared\n", .{});
 
         // Clear any remaining relationships before deinit
         if (self.game_state.entity_manager.relationships.items.len > 0) {
@@ -142,11 +171,15 @@ pub const GameClient = struct {
             }
             self.game_state.entity_manager.relationships.clearAndFree();
         }
+        std.debug.print("Relationships cleared\n", .{});
 
         if (self.mode == .multiplayer) {
             network.deinit();
         }
+        std.debug.print("Network deinitialized\n", .{});
+
         self.game_state.deinit();
+        std.debug.print("GameState deinitialized\n", .{});
     }
 
     pub fn connectToServer(self: *GameClient, host: []const u8, port: u16) !void {
