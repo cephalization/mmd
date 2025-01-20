@@ -49,6 +49,10 @@ pub const GameState = struct {
     last_state_events_update_time: f64,
     last_input_events_update_time: f64,
     input_events_per_second: usize,
+    physics_time_accumulator: f32, // Accumulated time for physics steps
+
+    // Fixed physics timestep (16.666ms = ~60Hz)
+    pub const PHYSICS_TIMESTEP: f32 = 1.0 / 60.0;
 
     pub fn init(allocator: std.mem.Allocator, create_player: bool) !GameState {
         var state = GameState{
@@ -71,6 +75,7 @@ pub const GameState = struct {
             .last_state_events_update_time = 0,
             .last_input_events_update_time = 0,
             .input_events_per_second = 0,
+            .physics_time_accumulator = 0,
         };
 
         if (create_player) {
@@ -107,9 +112,11 @@ pub const GameState = struct {
         self.state_events.deinit();
     }
 
-    pub fn update(self: *GameState, current_game_time: f64) !void {
+    pub fn update(self: *GameState, current_game_time: f64, delta_time: f32) !void {
+        // Accumulate time for physics
+        self.physics_time_accumulator += delta_time;
+
         // Reset flags at the start of the update
-        // Wait for input to re-set them if they are still valid
         self.is_spawning = false;
         self.is_deleting = false;
         self.is_marking_delete = false;
@@ -129,7 +136,7 @@ pub const GameState = struct {
             self.input_events_per_second += events.len;
         }
 
-        // Convert input events to state events
+        // Convert input events to state events and process them
         for (events) |event| {
             try self.state_events.append(.{
                 .timestamp = event.timestamp,
@@ -145,8 +152,14 @@ pub const GameState = struct {
         // Clear processed input events
         self.input_manager.clearEvents();
 
-        // Note: We no longer process state events here
-        // The caller must explicitly call processStateEvents when ready
+        // Run fixed timestep physics updates
+        while (self.physics_time_accumulator >= PHYSICS_TIMESTEP) {
+            // First update entity forces and behaviors
+            self.updateEntities(PHYSICS_TIMESTEP);
+            // Then run physics simulation step
+            self.physics_system.step(&self.entity_manager, PHYSICS_TIMESTEP);
+            self.physics_time_accumulator -= PHYSICS_TIMESTEP;
+        }
 
         // Handle deletion cooldowns and cleanup
         var some_deleteable = false;
@@ -178,9 +191,6 @@ pub const GameState = struct {
                 }
             }
         }
-
-        // Update physics (assuming 60 FPS fixed timestep)
-        self.physics_system.step(&self.entity_manager, 1.0 / 60.0);
     }
 
     pub fn processStateEvents(self: *GameState, delta_time: f32, current_time: f64) !void {
@@ -245,8 +255,17 @@ pub const GameState = struct {
         // Clear processed state events
         self.state_events.clearRetainingCapacity();
 
-        // Update physics and other time-based systems now that state events have been processed
-        self.updateEntities(delta_time);
+        // Accumulate time for physics
+        self.physics_time_accumulator += delta_time;
+
+        // Run fixed timestep physics updates
+        while (self.physics_time_accumulator >= PHYSICS_TIMESTEP) {
+            // First update entity forces and behaviors
+            self.updateEntities(PHYSICS_TIMESTEP);
+            // Then run physics simulation step
+            self.physics_system.step(&self.entity_manager, PHYSICS_TIMESTEP);
+            self.physics_time_accumulator -= PHYSICS_TIMESTEP;
+        }
     }
 
     pub fn spawnChildren(self: *GameState, time: f64, parent_id: usize) !void {

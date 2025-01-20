@@ -43,11 +43,12 @@ pub const PhysicsSystem = struct {
             // Skip inactive entities
             if (!entity_manager.entities.get(entity_id).active) continue;
 
-            // Apply damping
-            physics.velocity.x *= physics.damping;
-            physics.velocity.y *= physics.damping;
+            // Apply damping (adjusted for fixed timestep)
+            const damping_factor = std.math.pow(f32, physics.damping, dt / (1.0 / 60.0));
+            physics.velocity.x *= damping_factor;
+            physics.velocity.y *= damping_factor;
 
-            // Update position
+            // Update position with fixed timestep
             var entity = entity_manager.entities.get(entity_id);
             entity.position.x += physics.velocity.x * dt;
             entity.position.y += physics.velocity.y * dt;
@@ -91,17 +92,19 @@ pub const PhysicsSystem = struct {
                     entity_manager.entities.set(other_id, updated_other);
 
                     // Update velocities (elastic collision)
+                    // Scale impulse by fixed timestep to maintain consistent behavior
                     const relative_vel_x = physics.velocity.x - other_physics.velocity.x;
                     const relative_vel_y = physics.velocity.y - other_physics.velocity.y;
                     const impulse = -(1.5 * (relative_vel_x * nx + relative_vel_y * ny)) /
                         (1.0 / physics.mass + 1.0 / other_physics.mass);
 
-                    physics.velocity.x += impulse * nx / physics.mass;
-                    physics.velocity.y += impulse * ny / physics.mass;
+                    const impulse_scale = dt / (1.0 / 60.0);
+                    physics.velocity.x += (impulse * nx / physics.mass) * impulse_scale;
+                    physics.velocity.y += (impulse * ny / physics.mass) * impulse_scale;
 
                     var other_phys = other_physics;
-                    other_phys.velocity.x -= impulse * nx / other_phys.mass;
-                    other_phys.velocity.y -= impulse * ny / other_phys.mass;
+                    other_phys.velocity.x -= (impulse * nx / other_phys.mass) * impulse_scale;
+                    other_phys.velocity.y -= (impulse * ny / other_phys.mass) * impulse_scale;
                     self.components.put(other_id, other_phys) catch unreachable;
                 }
             }

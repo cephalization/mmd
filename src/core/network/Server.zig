@@ -203,6 +203,7 @@ pub const GameServer = struct {
                 const current_game_time_seconds = @as(f64, @floatFromInt(current_time)) / std.time.ns_per_s;
                 try self.game_state.update(
                     current_game_time_seconds,
+                    fixed_delta,
                 );
                 try self.game_state.processStateEvents(fixed_delta, current_game_time_seconds);
                 // Clear processed input events
