@@ -14,8 +14,20 @@ zigup 0.14.0-dev.2577+271452d22
 
 - Download deps and run the game
 
+### Singleplayer
+
 ```sh
 zig build run
+```
+
+### Multiplayer
+
+```sh
+# start server
+zig build run -- --server  [--port <port>]
+
+# start client
+zig build run -- --client <server_ip> [--port <port>]
 ```
 
 ## Details
