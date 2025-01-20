@@ -4,7 +4,7 @@ const Entity = @import("Entity.zig");
 const Input = @import("Input.zig");
 
 // Player movement constants
-pub const PLAYER_MOVE_SPEED: f32 = 50.0; // Base movement speed
+pub const PLAYER_MOVE_SPEED: f32 = 400.0; // Base movement speed
 
 // Flocking behavior constants
 pub const CLOSE_DISTANCE: f32 = 31.0; // Minimum desired distance between objects

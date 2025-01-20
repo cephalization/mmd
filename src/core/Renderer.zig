@@ -67,7 +67,7 @@ pub const Renderer = struct {
             .ui_visible = true,
             .camera = Camera.Camera.init(@floatFromInt(window_width), @floatFromInt(window_height)),
             .noise_offset = .{ .x = 0, .y = 0 },
-            .grid_lines_visible = true,
+            .grid_lines_visible = false,
         };
     }
 
@@ -76,7 +76,7 @@ pub const Renderer = struct {
         self.child_scale_slider.deinit();
     }
 
-    pub fn drawDebugText(game_state: *State.GameState, player: Entity.Entity, active_children: []const usize) !void {
+    pub fn drawDebugText(game_state: *State.GameState, player: Entity.Entity, active_children_len: usize) !void {
         // Draw UI
         const player_coords = try std.fmt.allocPrint(
             std.heap.page_allocator,
@@ -95,7 +95,7 @@ pub const Renderer = struct {
         const children_text = try std.fmt.allocPrint(
             std.heap.page_allocator,
             "children: {d}",
-            .{active_children.len},
+            .{active_children_len},
         );
         defer std.heap.page_allocator.free(children_text);
 
@@ -129,13 +129,10 @@ pub const Renderer = struct {
         ray.drawText("Controls: Arrow keys to move, hold space to spawn, hold R to delete", 10, next_y, 20, ray.WHITE);
     }
 
-    pub fn renderUI(game_state: *const State.GameState) !void {
+    pub fn renderUI(game_state: *State.GameState) !void {
         if (game_state.entity_manager.getActiveEntity(game_state.player_id)) |player| {
             // Render player info
-            const player_pos = player.position;
-            const text = try std.fmt.allocPrint(std.heap.page_allocator, "Player Pos: ({d:.2}, {d:.2})", .{ player_pos.x, player_pos.y });
-            defer std.heap.page_allocator.free(text);
-            ray.drawText(text.ptr, 10, 10, 20, ray.WHITE);
+            try Renderer.drawDebugText(game_state, player, game_state.entity_manager.getActiveChildren(game_state.player_id).len);
         } else {
             ray.drawText("Connecting...", 10, 10, 20, ray.WHITE);
         }
