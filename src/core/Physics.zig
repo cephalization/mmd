@@ -84,8 +84,46 @@ pub const PhysicsSystem = struct {
 
             // Check for wall collisions
             if (checkCollision(physics.shape, next_pos, world)) {
-                // If we hit a wall, stop movement in that direction
-                physics.velocity = .{ .x = 0, .y = 0 };
+                // Find the wall normal by checking which direction has the collision
+                const test_x = ray.Vector2{
+                    .x = next_pos.x,
+                    .y = entity.position.y,
+                };
+                const test_y = ray.Vector2{
+                    .x = entity.position.x,
+                    .y = next_pos.y,
+                };
+
+                const collides_x = checkCollision(physics.shape, test_x, world);
+                const collides_y = checkCollision(physics.shape, test_y, world);
+
+                // Calculate wall normal based on collision direction
+                var wall_normal = ray.Vector2{ .x = 0, .y = 0 };
+                if (collides_x) wall_normal.x = if (next_pos.x > entity.position.x) -1 else 1;
+                if (collides_y) wall_normal.y = if (next_pos.y > entity.position.y) -1 else 1;
+
+                // Normalize the wall normal if both components are non-zero
+                if (wall_normal.x != 0 and wall_normal.y != 0) {
+                    const len = @sqrt(wall_normal.x * wall_normal.x + wall_normal.y * wall_normal.y);
+                    wall_normal.x /= len;
+                    wall_normal.y /= len;
+                }
+
+                // Project velocity onto the wall plane
+                const dot = physics.velocity.x * wall_normal.x + physics.velocity.y * wall_normal.y;
+                physics.velocity.x -= wall_normal.x * dot;
+                physics.velocity.y -= wall_normal.y * dot;
+
+                // Apply a friction factor to the sliding motion
+                physics.velocity.x *= 0.8;
+                physics.velocity.y *= 0.8;
+
+                // Update position considering the wall slide
+                entity.position = ray.Vector2{
+                    .x = entity.position.x + physics.velocity.x * dt,
+                    .y = entity.position.y + physics.velocity.y * dt,
+                };
+                entity_manager.entities.set(entity_id, entity);
             } else {
                 // Update position if no wall collision
                 entity.position = next_pos;
