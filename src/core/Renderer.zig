@@ -60,7 +60,7 @@ pub const Renderer = struct {
         const wheel_move = ray.getMouseWheelMove();
         if (wheel_move != 0) {
             // Reduced zoom factor for more gradual zooming
-            const zoom_factor: f32 = if (wheel_move > 0) 1.05 else 0.95;
+            const zoom_factor: f32 = if (wheel_move > 0) 1.2 else 0.8;
 
             // Get mouse position
             const mouse_pos = ray.getMousePosition();

@@ -6,7 +6,7 @@ const Physics = @import("Physics.zig");
 const World = @import("World.zig");
 
 // Player movement constants
-pub const PLAYER_MOVE_SPEED: f32 = 20.0; // Base movement speed
+pub const PLAYER_MOVE_SPEED: f32 = 50.0; // Base movement speed
 
 // Flocking behavior constants
 pub const CLOSE_DISTANCE: f32 = 31.0; // Minimum desired distance between objects
