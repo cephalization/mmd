@@ -4,7 +4,7 @@ const Entity = @import("Entity.zig");
 const Input = @import("Input.zig");
 
 // Player movement constants
-pub const PLAYER_MOVE_SPEED: f32 = 20.0; // Base movement speed
+pub const PLAYER_MOVE_SPEED: f32 = 700.0; // Base movement speed
 
 // Flocking behavior constants
 pub const CLOSE_DISTANCE: f32 = 31.0; // Minimum desired distance between objects
@@ -108,9 +108,10 @@ pub const GameState = struct {
         // Process all queued input events into state events
         const events = self.input_manager.processEvents();
         // print count of input events processed in the last 5 seconds
-        if (current_game_time - self.last_input_events_update_time > 5.0) {
+        const time_since_last_input_events_update = current_game_time - self.last_input_events_update_time;
+        if (time_since_last_input_events_update > 5.0) {
             self.last_input_events_update_time = current_game_time;
-            std.debug.print("Processed {} input events in the last 5 seconds\n", .{self.input_events_per_second});
+            std.debug.print("Processed {} input events in the last {} seconds\n", .{ self.input_events_per_second, time_since_last_input_events_update });
             self.input_events_per_second = 0;
         } else {
             self.input_events_per_second += events.len;
@@ -169,9 +170,10 @@ pub const GameState = struct {
 
     pub fn processStateEvents(self: *GameState, delta_time: f32, current_time: f64) !void {
         // print count of state events processed in the last 5 seconds
-        if (current_time - self.last_state_events_update_time > 5.0) {
+        const time_since_last_state_events_update = current_time - self.last_state_events_update_time;
+        if (time_since_last_state_events_update > 5.0) {
             self.last_state_events_update_time = current_time;
-            std.debug.print("Processed {} state events in the last 5 seconds\n", .{self.state_events_per_second});
+            std.debug.print("Processed {} state events in the last {} seconds\n", .{ self.state_events_per_second, time_since_last_state_events_update });
             self.state_events_per_second = 0;
         } else {
             self.state_events_per_second += self.state_events.items.len;
@@ -268,8 +270,10 @@ pub const GameState = struct {
                     // update player position
                     const player_direction = self.player_directions.get(id);
                     if (player_direction) |direction| {
-                        self.entity_manager.entities.items(.position)[id].x += direction.x * PLAYER_MOVE_SPEED;
-                        self.entity_manager.entities.items(.position)[id].y += direction.y * PLAYER_MOVE_SPEED;
+                        // Use fixed time step matching input rate (1/60) for consistent movement
+                        const fixed_time_step = 1.0 / 60.0;
+                        self.entity_manager.entities.items(.position)[id].x += direction.x * PLAYER_MOVE_SPEED * fixed_time_step;
+                        self.entity_manager.entities.items(.position)[id].y += direction.y * PLAYER_MOVE_SPEED * fixed_time_step;
                     }
 
                     // Update children positions
