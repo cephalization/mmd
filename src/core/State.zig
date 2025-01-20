@@ -2,9 +2,10 @@ const std = @import("std");
 const ray = @import("../raylib.zig");
 const Entity = @import("Entity.zig");
 const Input = @import("Input.zig");
+const Physics = @import("Physics.zig");
 
 // Player movement constants
-pub const PLAYER_MOVE_SPEED: f32 = 700.0; // Base movement speed
+pub const PLAYER_MOVE_SPEED: f32 = 20.0; // Base movement speed
 
 // Flocking behavior constants
 pub const CLOSE_DISTANCE: f32 = 31.0; // Minimum desired distance between objects
@@ -31,6 +32,7 @@ pub const StateEvent = struct {
 pub const GameState = struct {
     entity_manager: Entity.EntityManager,
     input_manager: Input.InputManager,
+    physics_system: Physics.PhysicsSystem,
     player_id: usize,
     last_spawn_time: f64,
     last_delete_time: f64,
@@ -52,6 +54,7 @@ pub const GameState = struct {
         var state = GameState{
             .entity_manager = Entity.EntityManager.init(allocator),
             .input_manager = Input.InputManager.init(),
+            .physics_system = Physics.PhysicsSystem.init(allocator),
             .player_id = 0,
             .last_spawn_time = 0,
             .last_delete_time = 0,
@@ -83,6 +86,14 @@ pub const GameState = struct {
             };
             state.player_id = try state.entity_manager.createEntity(player_entity, null);
             try state.player_directions.put(state.player_id, .{ .x = 0, .y = 0 });
+
+            // Add physics component to player
+            try state.physics_system.addComponent(state.player_id, .{
+                .velocity = .{ .x = 0, .y = 0 },
+                .mass = 1.0,
+                .radius = 16.0,
+                .damping = 0.95,
+            });
         }
 
         return state;
@@ -91,6 +102,7 @@ pub const GameState = struct {
     pub fn deinit(self: *GameState) void {
         self.player_directions.deinit();
         self.input_manager.deinit();
+        self.physics_system.deinit();
         self.entity_manager.deinit();
         self.state_events.deinit();
     }
@@ -166,6 +178,9 @@ pub const GameState = struct {
                 }
             }
         }
+
+        // Update physics (assuming 60 FPS fixed timestep)
+        self.physics_system.step(&self.entity_manager, 1.0 / 60.0);
     }
 
     pub fn processStateEvents(self: *GameState, delta_time: f32, current_time: f64) !void {
@@ -237,7 +252,7 @@ pub const GameState = struct {
     pub fn spawnChildren(self: *GameState, time: f64, parent_id: usize) !void {
         const spawn_count: usize = 5;
         if (self.entity_manager.getActiveEntity(parent_id)) |player| {
-            const spawn_radius: f32 = 10.0;
+            const spawn_radius: f32 = 30.0;
             const angle_increment = 2 * std.math.pi / @as(f32, @floatFromInt(spawn_count));
             const angle_offset = 10.0 * @as(f32, @floatCast(time));
 
@@ -253,7 +268,15 @@ pub const GameState = struct {
                     .deleteable = 0,
                     .entity_type = .child,
                 };
-                _ = try self.entity_manager.createEntity(new_entity, parent_id);
+                const child_id = try self.entity_manager.createEntity(new_entity, parent_id);
+
+                // Add physics component to the new child
+                try self.physics_system.addComponent(child_id, .{
+                    .velocity = .{ .x = 0, .y = 0 },
+                    .mass = 0.5,
+                    .radius = 8.0,
+                    .damping = 0.95,
+                });
             }
         }
     }
@@ -267,18 +290,30 @@ pub const GameState = struct {
                     const active_children = self.entity_manager.getActiveChildren(id);
                     defer self.allocator.free(active_children);
 
-                    // update player position
+                    // update player position using physics
                     const player_direction = self.player_directions.get(id);
                     if (player_direction) |direction| {
-                        // Use fixed time step matching input rate (1/60) for consistent movement
-                        const fixed_time_step = 1.0 / 60.0;
-                        self.entity_manager.entities.items(.position)[id].x += direction.x * PLAYER_MOVE_SPEED * fixed_time_step;
-                        self.entity_manager.entities.items(.position)[id].y += direction.y * PLAYER_MOVE_SPEED * fixed_time_step;
+                        // Apply force to player based on input direction
+                        const force = ray.Vector2{
+                            .x = direction.x * PLAYER_MOVE_SPEED,
+                            .y = direction.y * PLAYER_MOVE_SPEED,
+                        };
+                        self.physics_system.applyForce(id, force);
                     }
 
-                    // Update children positions
+                    // Update children positions using physics
                     for (active_children) |child_id| {
-                        var child_pos = &self.entity_manager.entities.items(.position)[child_id];
+                        // Ensure child has physics component
+                        if (!self.physics_system.components.contains(child_id)) {
+                            self.physics_system.addComponent(child_id, .{
+                                .velocity = .{ .x = 0, .y = 0 },
+                                .mass = 0.5, // Children are lighter than players
+                                .radius = 8.0, // Children are smaller than players
+                                .damping = 0.95,
+                            }) catch continue;
+                        }
+
+                        const child_pos = self.entity_manager.entities.items(.position)[child_id];
                         var avoidance = ray.Vector2{ .x = 0, .y = 0 };
                         var count: f32 = 0.0;
 
@@ -309,19 +344,25 @@ pub const GameState = struct {
                             count += 1.0;
                         }
 
-                        // Apply avoidance forces
+                        // Apply avoidance forces through physics system
                         const move_speed = BASE_MOVE_SPEED * delta_time;
                         if (count > 0.0) {
-                            child_pos.x += (avoidance.x / count * AVOIDANCE_WEIGHT) * move_speed;
-                            child_pos.y += (avoidance.y / count * AVOIDANCE_WEIGHT) * move_speed;
+                            const avoidance_force = ray.Vector2{
+                                .x = (avoidance.x / count * AVOIDANCE_WEIGHT) * move_speed,
+                                .y = (avoidance.y / count * AVOIDANCE_WEIGHT) * move_speed,
+                            };
+                            self.physics_system.applyForce(child_id, avoidance_force);
                         }
 
-                        // Weak attraction to player
+                        // Weak attraction to player through physics
                         const to_player_x = player.position.x - child_pos.x;
                         const to_player_y = player.position.y - child_pos.y;
                         const attract_speed = move_speed * ATTRACTION_WEIGHT;
-                        child_pos.x += to_player_x * attract_speed;
-                        child_pos.y += to_player_y * attract_speed;
+                        const attraction_force = ray.Vector2{
+                            .x = to_player_x * attract_speed,
+                            .y = to_player_y * attract_speed,
+                        };
+                        self.physics_system.applyForce(child_id, attraction_force);
                     }
                 }
             }
@@ -351,7 +392,17 @@ pub const GameState = struct {
             .entity_type = .player,
         };
 
-        return try self.entity_manager.createEntity(player_entity, null);
+        const player_id = try self.entity_manager.createEntity(player_entity, null);
+
+        // Add physics component to the new player
+        try self.physics_system.addComponent(player_id, .{
+            .velocity = .{ .x = 0, .y = 0 },
+            .mass = 1.0,
+            .radius = 16.0,
+            .damping = 0.95,
+        });
+
+        return player_id;
     }
 
     fn handleInputEvent(self: *GameState, event: Input.InputEvent) !void {
