@@ -3,6 +3,7 @@ const ray = @import("../raylib.zig");
 const Entity = @import("Entity.zig");
 const Input = @import("Input.zig");
 const Physics = @import("Physics.zig");
+const World = @import("World.zig");
 
 // Player movement constants
 pub const PLAYER_MOVE_SPEED: f32 = 20.0; // Base movement speed
@@ -33,6 +34,7 @@ pub const GameState = struct {
     entity_manager: Entity.EntityManager,
     input_manager: Input.InputManager,
     physics_system: Physics.PhysicsSystem,
+    world: World.World,
     player_id: usize,
     last_spawn_time: f64,
     last_delete_time: f64,
@@ -59,6 +61,7 @@ pub const GameState = struct {
             .entity_manager = Entity.EntityManager.init(allocator),
             .input_manager = Input.InputManager.init(),
             .physics_system = Physics.PhysicsSystem.init(allocator),
+            .world = World.World.init(),
             .player_id = 0,
             .last_spawn_time = 0,
             .last_delete_time = 0,
@@ -113,6 +116,9 @@ pub const GameState = struct {
     }
 
     pub fn update(self: *GameState, current_game_time: f64, delta_time: f32) !void {
+        // Update world
+        self.world.update();
+
         // Accumulate time for physics
         self.physics_time_accumulator += delta_time;
 
