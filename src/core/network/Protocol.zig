@@ -13,7 +13,6 @@ pub const MessageType = enum {
     entity_created,
     entity_updated,
     entity_deleted,
-    relationship_updated,
     initial_state_chunk,
     initial_state_ack,
 };
@@ -26,12 +25,7 @@ pub const NetworkEntity = struct {
     deleteable: f64,
     entity_type: Entity.EntityType,
     active: bool,
-};
-
-// Network-friendly version of EntityRelationship
-pub const NetworkRelationship = struct {
-    parent_id: ?usize,
-    children: []usize,
+    parent_id: ?usize = null,
 };
 
 pub const ConnectRequest = struct {
@@ -52,7 +46,6 @@ pub const PlayerEvent = struct {
 pub const StateUpdate = struct {
     timestamp: f64,
     entities: []NetworkEntity,
-    relationships: []NetworkRelationship,
 };
 
 pub const EntityCreated = struct {
@@ -66,22 +59,17 @@ pub const EntityUpdated = struct {
     deleteable: ?f64 = null,
     entity_type: ?Entity.EntityType = null,
     active: ?bool = null,
+    parent_id: ?usize = null,
 };
 
 pub const EntityDeleted = struct {
     id: usize,
 };
 
-pub const RelationshipUpdated = struct {
-    parent_id: ?usize,
-    children: []usize,
-};
-
 pub const InitialStateChunk = struct {
     chunk_id: u32,
     total_chunks: u32,
     entities: []NetworkEntity,
-    relationships: []NetworkRelationship,
 };
 
 pub const InitialStateAck = struct {
@@ -99,7 +87,6 @@ pub const MessagePayload = union(MessageType) {
     entity_created: EntityCreated,
     entity_updated: EntityUpdated,
     entity_deleted: EntityDeleted,
-    relationship_updated: RelationshipUpdated,
     initial_state_chunk: InitialStateChunk,
     initial_state_ack: InitialStateAck,
 };
@@ -118,12 +105,11 @@ pub const NetworkMessage = struct {
                 .player_joined => .{ .player_joined = .{ .client_id = 0, .player_entity_id = 0 } },
                 .player_left => .{ .player_left = .{ .client_id = 0, .player_entity_id = 0 } },
                 .input_event => .{ .input_event = undefined },
-                .state_update => .{ .state_update = .{ .timestamp = 0, .entities = &[_]NetworkEntity{}, .relationships = &[_]NetworkRelationship{} } },
+                .state_update => .{ .state_update = .{ .timestamp = 0, .entities = &[_]NetworkEntity{} } },
                 .entity_created => .{ .entity_created = .{ .entity = undefined } },
                 .entity_updated => .{ .entity_updated = .{ .id = 0 } },
                 .entity_deleted => .{ .entity_deleted = .{ .id = 0 } },
-                .relationship_updated => .{ .relationship_updated = .{ .parent_id = null, .children = &[_]usize{} } },
-                .initial_state_chunk => .{ .initial_state_chunk = .{ .chunk_id = 0, .total_chunks = 0, .entities = &[_]NetworkEntity{}, .relationships = &[_]NetworkRelationship{} } },
+                .initial_state_chunk => .{ .initial_state_chunk = .{ .chunk_id = 0, .total_chunks = 0, .entities = &[_]NetworkEntity{} } },
                 .initial_state_ack => .{ .initial_state_ack = .{ .chunk_id = 0 } },
             },
         };

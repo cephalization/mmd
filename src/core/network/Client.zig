@@ -167,15 +167,6 @@ pub const GameClient = struct {
         }
         std.debug.print("Entities cleared\n", .{});
 
-        // Clear any remaining relationships before deinit
-        if (self.game_state.entity_manager.relationships.items.len > 0) {
-            for (self.game_state.entity_manager.relationships.items) |*rel| {
-                rel.children.deinit();
-            }
-            self.game_state.entity_manager.relationships.clearAndFree();
-        }
-        std.debug.print("Relationships cleared\n", .{});
-
         if (self.mode == .multiplayer) {
             network.deinit();
         }
@@ -291,7 +282,6 @@ pub const GameClient = struct {
         self.mutex.lock();
         defer self.mutex.unlock();
 
-        // std.debug.print("Handling message of type: {}\n", .{message.type});
         switch (message.type) {
             .connect_response => {
                 std.debug.print("Received connect response, success: {}\n", .{message.payload.connect_response.success});
@@ -320,6 +310,7 @@ pub const GameClient = struct {
                             .deleteable = entity.deleteable,
                             .entity_type = entity.entity_type,
                             .active = entity.active,
+                            .parent_id = entity.parent_id,
                         });
                     }
 
@@ -329,27 +320,7 @@ pub const GameClient = struct {
                     self.game_state.entity_manager.entities.items(.deleteable)[entity.id] = entity.deleteable;
                     self.game_state.entity_manager.entities.items(.entity_type)[entity.id] = entity.entity_type;
                     self.game_state.entity_manager.entities.items(.active)[entity.id] = entity.active;
-                }
-
-                // Process relationships
-                if (chunk.chunk_id == 0) { // Only process relationships in first chunk
-                    // Clear existing relationships
-                    for (self.game_state.entity_manager.relationships.items) |*rel| {
-                        rel.children.deinit();
-                    }
-                    self.game_state.entity_manager.relationships.clearRetainingCapacity();
-
-                    // Add new relationships
-                    try self.game_state.entity_manager.relationships.ensureTotalCapacity(chunk.relationships.len);
-                    for (chunk.relationships) |rel| {
-                        var new_rel = try self.game_state.entity_manager.relationships.addOne();
-                        new_rel.* = .{
-                            .parent_id = rel.parent_id,
-                            .children = std.ArrayList(usize).init(self.allocator),
-                            .allocator = self.allocator,
-                        };
-                        try new_rel.children.appendSlice(rel.children);
-                    }
+                    self.game_state.entity_manager.entities.items(.parent_id)[entity.id] = entity.parent_id;
                 }
 
                 // Send acknowledgment
@@ -370,6 +341,7 @@ pub const GameClient = struct {
                         .deleteable = entity.deleteable,
                         .entity_type = entity.entity_type,
                         .active = entity.active,
+                        .parent_id = entity.parent_id,
                     });
                 }
             },
@@ -393,6 +365,9 @@ pub const GameClient = struct {
                 if (entity_update.active) |active| {
                     self.game_state.entity_manager.entities.items(.active)[entity_update.id] = active;
                 }
+                if (entity_update.parent_id) |parent_id| {
+                    self.game_state.entity_manager.entities.items(.parent_id)[entity_update.id] = parent_id;
+                }
             },
 
             .entity_deleted => {
@@ -400,27 +375,6 @@ pub const GameClient = struct {
                 if (entity_id < self.game_state.entity_manager.entities.len) {
                     self.game_state.entity_manager.deleteEntity(entity_id);
                 }
-            },
-
-            .relationship_updated => {
-                const rel_update = message.payload.relationship_updated;
-                // Find or create relationship
-                for (self.game_state.entity_manager.relationships.items) |*rel| {
-                    if (rel.parent_id == rel_update.parent_id) {
-                        rel.children.clearRetainingCapacity();
-                        try rel.children.appendSlice(rel_update.children);
-                        return;
-                    }
-                }
-
-                // If not found, create new relationship
-                var new_rel = try self.game_state.entity_manager.relationships.addOne();
-                new_rel.* = .{
-                    .parent_id = rel_update.parent_id,
-                    .children = std.ArrayList(usize).init(self.allocator),
-                    .allocator = self.allocator,
-                };
-                try new_rel.children.appendSlice(rel_update.children);
             },
 
             .player_joined => {
@@ -439,6 +393,7 @@ pub const GameClient = struct {
                         .deleteable = 0,
                         .entity_type = .player,
                         .active = true,
+                        .parent_id = null,
                     });
                 }
             },

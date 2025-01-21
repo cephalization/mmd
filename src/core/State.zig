@@ -243,14 +243,10 @@ pub const GameState = struct {
                         if (event_time - self.last_mark_delete_time > mark_delete_cooldown) {
                             self.last_mark_delete_time = event_time;
                             // Mark first valid child as deleteable
-                            var next_index: usize = 0;
-                            while (next_index < self.entity_manager.relationships.items[event.source_player_id].children.items.len) {
-                                const child_id = self.entity_manager.relationships.items[event.source_player_id].children.items[next_index];
-                                if (self.entity_manager.entities.items(.deleteable)[child_id] == 0) {
-                                    self.entity_manager.entities.items(.deleteable)[child_id] = current_time;
-                                    break;
-                                }
-                                next_index += 1;
+                            const children = self.entity_manager.getActiveChildren(event.source_player_id);
+                            defer self.allocator.free(children);
+                            if (children.len > 0) {
+                                self.entity_manager.entities.items(.deleteable)[children[0]] = current_time;
                             }
                         }
                     }

@@ -34,12 +34,8 @@ const Client = struct {
         self.pending_chunks.deinit();
         for (self.pending_updates.items) |*msg| {
             // Free any allocated memory in network messages
-            if (msg.type == .relationship_updated) {
-                self.pending_updates.allocator.free(msg.payload.relationship_updated.children);
-            } else if (msg.type == .initial_state_chunk) {
-                for (msg.payload.initial_state_chunk.relationships) |rel| {
-                    self.pending_updates.allocator.free(rel.children);
-                }
+            if (msg.type == .initial_state_chunk) {
+                self.pending_updates.allocator.free(msg.payload.initial_state_chunk.entities);
             }
         }
         self.pending_updates.deinit();
@@ -197,7 +193,6 @@ pub const GameServer = struct {
     sender_thread: ?std.Thread = null,
     sender_thread_data: ?*SenderThread = null,
     last_entity_states: std.AutoHashMap(usize, Protocol.NetworkEntity),
-    last_relationships: std.ArrayList(Protocol.NetworkRelationship),
     entities_per_chunk: u32 = 10, // Number of entities to send in each initial state chunk
 
     pub fn init(allocator: std.mem.Allocator, port: u16) !*GameServer {
@@ -229,7 +224,6 @@ pub const GameServer = struct {
             .sender_thread = null,
             .sender_thread_data = null,
             .last_entity_states = std.AutoHashMap(usize, Protocol.NetworkEntity).init(allocator),
-            .last_relationships = std.ArrayList(Protocol.NetworkRelationship).init(allocator),
             .entities_per_chunk = 10,
             .current_game_time_seconds = 0,
             .last_frame_time = std.time.nanoTimestamp(),
@@ -287,17 +281,8 @@ pub const GameServer = struct {
             self.game_state.entity_manager.entities.clearAndFree(self.allocator);
         }
 
-        // Clear any remaining relationships before deinit
-        if (self.game_state.entity_manager.relationships.items.len > 0) {
-            for (self.game_state.entity_manager.relationships.items) |*rel| {
-                rel.children.deinit();
-            }
-            self.game_state.entity_manager.relationships.clearAndFree();
-        }
-
         // Clean up new fields
         self.last_entity_states.deinit();
-        self.last_relationships.deinit();
 
         self.clients.deinit();
         self.game_state.deinit();
@@ -464,7 +449,7 @@ pub const GameServer = struct {
         const entities = self.game_state.entity_manager.entities.slice();
 
         // Track created, updated, and deleted entities
-        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), 0..entities.len) |pos, scale, deleteable, entity_type, active, id| {
+        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), entities.items(.parent_id), 0..entities.len) |pos, scale, deleteable, entity_type, active, parent_id, id| {
             if (id >= entities.len) continue;
 
             const current_entity = Protocol.NetworkEntity{
@@ -474,6 +459,7 @@ pub const GameServer = struct {
                 .deleteable = deleteable,
                 .entity_type = entity_type,
                 .active = active,
+                .parent_id = parent_id,
             };
 
             // Check if this is a new entity
@@ -514,6 +500,10 @@ pub const GameServer = struct {
                 update_msg.payload.entity_updated.active = current_entity.active;
                 has_changes = true;
             }
+            if (last_entity.parent_id != current_entity.parent_id) {
+                update_msg.payload.entity_updated.parent_id = current_entity.parent_id;
+                has_changes = true;
+            }
 
             if (has_changes) {
                 try self.broadcastToInitializedClients(update_msg, null);
@@ -533,64 +523,6 @@ pub const GameServer = struct {
                 _ = self.last_entity_states.remove(id);
             }
         }
-
-        // Track relationship changes
-        var relationships_changed = false;
-
-        // First check if number of relationships changed
-        if (self.last_relationships.items.len != self.game_state.entity_manager.relationships.items.len) {
-            relationships_changed = true;
-        } else {
-            // Check each relationship for changes
-            outer: for (self.game_state.entity_manager.relationships.items) |rel| {
-                // Find matching relationship in last state
-                for (self.last_relationships.items) |last_rel| {
-                    if (last_rel.parent_id == rel.parent_id) {
-                        // Check if children array length changed
-                        if (last_rel.children.len != rel.children.items.len) {
-                            relationships_changed = true;
-                            break :outer;
-                        }
-                        // Check if any children changed
-                        for (rel.children.items, last_rel.children) |child, last_child| {
-                            if (child != last_child) {
-                                relationships_changed = true;
-                                break :outer;
-                            }
-                        }
-                        continue :outer;
-                    }
-                }
-                // If we get here, this is a new relationship
-                relationships_changed = true;
-                break;
-            }
-        }
-
-        // Only send updates and update last state if changes detected
-        if (relationships_changed) {
-            // Clear last relationships
-            for (self.last_relationships.items) |*rel| {
-                self.allocator.free(rel.children);
-            }
-            self.last_relationships.clearRetainingCapacity();
-
-            // Send updates and store new state
-            for (self.game_state.entity_manager.relationships.items) |rel| {
-                var update_msg = Protocol.NetworkMessage.init(.relationship_updated);
-                update_msg.payload.relationship_updated = .{
-                    .parent_id = rel.parent_id,
-                    .children = try self.allocator.dupe(usize, rel.children.items),
-                };
-                try self.broadcastToInitializedClients(update_msg, null);
-
-                // Store current state
-                try self.last_relationships.append(.{
-                    .parent_id = rel.parent_id,
-                    .children = try self.allocator.dupe(usize, rel.children.items),
-                });
-            }
-        }
     }
 
     fn broadcastToInitializedClients(self: *GameServer, message: Protocol.NetworkMessage, exclude_client: ?u64) !void {
@@ -605,17 +537,8 @@ pub const GameServer = struct {
             } else {
                 // Deep copy the message before queueing
                 var msg_copy = message;
-                if (message.type == .relationship_updated) {
-                    msg_copy.payload.relationship_updated.children = try self.allocator.dupe(usize, message.payload.relationship_updated.children);
-                } else if (message.type == .initial_state_chunk) {
-                    var rels = try self.allocator.alloc(Protocol.NetworkRelationship, message.payload.initial_state_chunk.relationships.len);
-                    for (message.payload.initial_state_chunk.relationships, 0..) |rel, i| {
-                        rels[i] = .{
-                            .parent_id = rel.parent_id,
-                            .children = try self.allocator.dupe(usize, rel.children),
-                        };
-                    }
-                    msg_copy.payload.initial_state_chunk.relationships = rels;
+                if (message.type == .initial_state_chunk) {
+                    msg_copy.payload.initial_state_chunk.entities = try self.allocator.dupe(Protocol.NetworkEntity, message.payload.initial_state_chunk.entities);
                 }
                 try client.pending_updates.append(msg_copy);
             }
@@ -665,7 +588,7 @@ pub const GameServer = struct {
         defer network_entities.deinit();
 
         const entities = self.game_state.entity_manager.entities.slice();
-        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), 0..entities.len) |pos, scale, deleteable, entity_type, active, id| {
+        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), entities.items(.parent_id), 0..entities.len) |pos, scale, deleteable, entity_type, active, parent_id, id| {
             if (id >= entities.len) continue;
 
             try network_entities.append(.{
@@ -675,17 +598,7 @@ pub const GameServer = struct {
                 .deleteable = deleteable,
                 .entity_type = entity_type,
                 .active = active,
-            });
-        }
-
-        // Convert relationships to network format
-        var network_relationships = std.ArrayList(Protocol.NetworkRelationship).init(self.allocator);
-        defer network_relationships.deinit();
-
-        for (self.game_state.entity_manager.relationships.items) |rel| {
-            try network_relationships.append(.{
-                .parent_id = rel.parent_id,
-                .children = try self.allocator.dupe(usize, rel.children.items),
+                .parent_id = parent_id,
             });
         }
 
@@ -706,7 +619,6 @@ pub const GameServer = struct {
                 .chunk_id = chunk_id,
                 .total_chunks = @intCast(total_chunks),
                 .entities = network_entities.items[entity_index..chunk_end],
-                .relationships = network_relationships.items,
             };
 
             try self.sendTo(client.addr, chunk_msg);
@@ -714,11 +626,6 @@ pub const GameServer = struct {
 
             entity_index = chunk_end;
             chunk_id += 1;
-        }
-
-        // Clean up relationship children arrays
-        for (network_relationships.items) |rel| {
-            self.allocator.free(rel.children);
         }
     }
 };

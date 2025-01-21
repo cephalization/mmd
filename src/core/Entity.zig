@@ -13,49 +13,25 @@ pub const Entity = struct {
     deleteable: f64,
     active: bool = true,
     entity_type: EntityType,
+    parent_id: ?usize = null,
 };
 
 pub const EntityList = std.MultiArrayList(Entity);
 
-// Relationship storage for parent-child connections
-pub const Relationships = struct {
-    parent_id: ?usize,
-    children: std.ArrayList(usize),
-    allocator: std.mem.Allocator,
-
-    pub fn init(parent: ?usize, allocator: std.mem.Allocator) Relationships {
-        return .{
-            .parent_id = parent,
-            .children = std.ArrayList(usize).init(allocator),
-            .allocator = allocator,
-        };
-    }
-
-    pub fn deinit(self: *Relationships) void {
-        self.children.deinit();
-    }
-};
-
 pub const EntityManager = struct {
     entities: EntityList,
-    relationships: std.ArrayList(Relationships),
     free_slots: std.ArrayList(usize),
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator) EntityManager {
         return .{
             .entities = EntityList{},
-            .relationships = std.ArrayList(Relationships).init(allocator),
             .free_slots = std.ArrayList(usize).init(allocator),
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *EntityManager) void {
-        for (self.relationships.items) |*rel| {
-            rel.deinit();
-        }
-        self.relationships.deinit();
         self.free_slots.deinit();
         self.entities.deinit(self.allocator);
     }
@@ -64,43 +40,21 @@ pub const EntityManager = struct {
         var entity_id: usize = undefined;
         var new_entity = entity;
         new_entity.active = true;
+        new_entity.parent_id = parent_id;
 
         // Reuse a free slot if available
         if (self.free_slots.items.len > 0) {
             entity_id = self.free_slots.pop();
             self.entities.set(entity_id, new_entity);
-            self.relationships.items[entity_id] = Relationships.init(parent_id, self.allocator);
         } else {
             try self.entities.append(self.allocator, new_entity);
-            try self.relationships.append(Relationships.init(parent_id, self.allocator));
             entity_id = self.entities.len - 1;
-        }
-
-        // Add to parent's children if parent exists
-        if (parent_id) |pid| {
-            try self.relationships.items[pid].children.append(entity_id);
         }
 
         return entity_id;
     }
 
     pub fn deleteEntity(self: *EntityManager, entity_id: usize) void {
-        var rel = &self.relationships.items[entity_id];
-
-        // Remove from parent's children list
-        if (rel.parent_id) |pid| {
-            for (self.relationships.items[pid].children.items, 0..) |child, i| {
-                if (child == entity_id) {
-                    _ = self.relationships.items[pid].children.orderedRemove(i);
-                    break;
-                }
-            }
-        }
-
-        // Clean up relationships
-        rel.deinit();
-        rel.* = Relationships.init(null, self.allocator);
-
         // Mark entity as inactive
         self.entities.items(.active)[entity_id] = false;
 
@@ -116,25 +70,26 @@ pub const EntityManager = struct {
         const scale = self.entities.items(.scale)[entity_id];
         const deleteable = self.entities.items(.deleteable)[entity_id];
         const entity_type = self.entities.items(.entity_type)[entity_id];
+        const parent_id = self.entities.items(.parent_id)[entity_id];
 
         return Entity{
             .position = pos,
             .scale = scale,
             .deleteable = deleteable,
             .entity_type = entity_type,
+            .parent_id = parent_id,
         };
     }
 
     // Helper function to get a slice of active children for a parent
     pub fn getActiveChildren(self: *EntityManager, parent_id: usize) []const usize {
         // Filter out inactive children
-        const children = &self.relationships.items[parent_id].children;
         var temp_active = std.ArrayList(usize).init(self.allocator);
         defer temp_active.deinit();
 
-        for (children.items) |child_id| {
-            if (self.entities.items(.active)[child_id]) {
-                temp_active.append(child_id) catch continue;
+        for (self.entities.items(.active), self.entities.items(.parent_id), 0..) |active, maybe_parent, id| {
+            if (active and maybe_parent != null and maybe_parent.? == parent_id) {
+                temp_active.append(id) catch continue;
             }
         }
 
