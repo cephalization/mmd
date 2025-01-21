@@ -185,15 +185,29 @@ pub const GameServer = struct {
     current_game_time_seconds: f64,
     last_frame_time: i128,
     last_state_update: i128,
-    state_update_rate: i128, // How often to send state updates (in nanoseconds)
-    last_input_update: i128, // Track last input processing time
-    input_update_rate: i128, // How often to process inputs (in nanoseconds)
+    state_update_rate: i128 = std.time.ns_per_s / 60, // Update state at 60Hz (16.6ms)
+    last_input_update: i128,
+    input_update_rate: i128 = std.time.ns_per_s / 60, // Process inputs at 60Hz
     network_thread: ?std.Thread = null,
     network_thread_data: ?*NetworkThread = null,
     sender_thread: ?std.Thread = null,
     sender_thread_data: ?*SenderThread = null,
     last_entity_states: std.AutoHashMap(usize, Protocol.NetworkEntity),
     entities_per_chunk: u32 = 10, // Number of entities to send in each initial state chunk
+    pending_updates: std.ArrayList(Protocol.EntityUpdated),
+    pending_creates: std.ArrayList(Protocol.EntityCreated),
+    pending_deletes: std.ArrayList(Protocol.EntityDeleted),
+    update_batch_size: usize = 50, // Maximum number of updates to batch together
+    max_updates_per_batch: usize = 10, // Maximum number of updates to send in a single network message
+    min_update_interval: i128 = std.time.ns_per_s / 60, // Send deltas at 60Hz
+    last_batch_time: i128,
+    current_sequence: u32 = 0,
+    snapshot_interval: i128 = std.time.ns_per_s / 4, // Full snapshot every 250ms
+    last_snapshot_time: i128,
+    snapshot_history: std.ArrayList(Protocol.StateSnapshot),
+    max_snapshot_history: usize = 30, // Keep more snapshots for better delta references
+    entities_per_snapshot_chunk: u32 = 20, // Maximum entities per snapshot chunk
+    deltas_per_chunk: u32 = 20, // Maximum deltas per chunk
 
     pub fn init(allocator: std.mem.Allocator, port: u16) !*GameServer {
         try network.init();
@@ -209,16 +223,18 @@ pub const GameServer = struct {
         var server = try allocator.create(GameServer);
         errdefer allocator.destroy(server);
 
+        const current_time = std.time.nanoTimestamp();
+
         server.* = GameServer{
             .allocator = allocator,
             .game_state = try State.GameState.init(allocator, false),
             .clients = std.AutoHashMap(u64, Client).init(allocator),
             .socket = socket,
             .next_client_id = 1,
-            .last_state_update = std.time.nanoTimestamp(),
-            .state_update_rate = std.time.ns_per_s / 20, // 20 Hz state updates (50ms)
-            .last_input_update = std.time.nanoTimestamp(),
-            .input_update_rate = std.time.ns_per_s / 60, // 60 Hz input processing (16.6ms)
+            .last_state_update = current_time,
+            .state_update_rate = std.time.ns_per_s / 60,
+            .last_input_update = current_time,
+            .input_update_rate = std.time.ns_per_s / 60,
             .network_thread = null,
             .network_thread_data = null,
             .sender_thread = null,
@@ -226,7 +242,14 @@ pub const GameServer = struct {
             .last_entity_states = std.AutoHashMap(usize, Protocol.NetworkEntity).init(allocator),
             .entities_per_chunk = 10,
             .current_game_time_seconds = 0,
-            .last_frame_time = std.time.nanoTimestamp(),
+            .last_frame_time = current_time,
+            .pending_updates = std.ArrayList(Protocol.EntityUpdated).init(allocator),
+            .pending_creates = std.ArrayList(Protocol.EntityCreated).init(allocator),
+            .pending_deletes = std.ArrayList(Protocol.EntityDeleted).init(allocator),
+            .last_batch_time = current_time,
+            .current_sequence = 0,
+            .last_snapshot_time = current_time,
+            .snapshot_history = std.ArrayList(Protocol.StateSnapshot).init(allocator),
         };
 
         // Create network thread data
@@ -288,6 +311,13 @@ pub const GameServer = struct {
         self.game_state.deinit();
         network.deinit();
         self.allocator.destroy(self);
+        self.pending_updates.deinit();
+        self.pending_creates.deinit();
+        self.pending_deletes.deinit();
+        for (self.snapshot_history.items) |snapshot| {
+            self.allocator.free(snapshot.entities);
+        }
+        self.snapshot_history.deinit();
     }
 
     pub fn start(self: *GameServer) !void {
@@ -445,84 +475,169 @@ pub const GameServer = struct {
     }
 
     fn broadcastGameState(self: *GameServer) !void {
-        // Convert current entities to network format and detect changes
+        const current_time = std.time.nanoTimestamp();
         const entities = self.game_state.entity_manager.entities.slice();
+        const time_since_snapshot = current_time - self.last_snapshot_time;
 
-        // Track created, updated, and deleted entities
-        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), entities.items(.parent_id), 0..entities.len) |pos, scale, deleteable, entity_type, active, parent_id, id| {
-            if (id >= entities.len) continue;
+        // Decide whether to send a full snapshot or delta
+        if (time_since_snapshot >= self.snapshot_interval or self.snapshot_history.items.len == 0) {
+            // Send full snapshot
+            var snapshot_entities = try std.ArrayList(Protocol.NetworkEntity).initCapacity(
+                self.allocator,
+                entities.len,
+            );
+            defer snapshot_entities.deinit();
 
-            const current_entity = Protocol.NetworkEntity{
-                .id = id,
-                .position = .{ .x = pos.x, .y = pos.y },
-                .scale = scale,
-                .deleteable = deleteable,
-                .entity_type = entity_type,
-                .active = active,
-                .parent_id = parent_id,
+            // Collect all active entities
+            for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), entities.items(.parent_id), 0..entities.len) |pos, scale, deleteable, entity_type, active, parent_id, id| {
+                if (id >= entities.len) continue;
+                if (!active) continue; // Only send active entities
+
+                try snapshot_entities.append(.{
+                    .id = id,
+                    .position = .{ .x = pos.x, .y = pos.y },
+                    .scale = scale,
+                    .deleteable = deleteable,
+                    .entity_type = entity_type,
+                    .active = active,
+                    .parent_id = parent_id,
+                });
+            }
+
+            // Create the snapshot for history
+            const snapshot = Protocol.StateSnapshot{
+                .sequence = self.current_sequence,
+                .timestamp = @as(f64, @floatFromInt(current_time)) / std.time.ns_per_s,
+                .entities = try self.allocator.dupe(Protocol.NetworkEntity, snapshot_entities.items),
             };
 
-            // Check if this is a new entity
-            if (!self.last_entity_states.contains(id)) {
-                // Broadcast entity creation
-                var create_msg = Protocol.NetworkMessage.init(.entity_created);
-                create_msg.payload.entity_created = .{
-                    .entity = current_entity,
+            // Store snapshot in history
+            try self.snapshot_history.append(snapshot);
+            if (self.snapshot_history.items.len > self.max_snapshot_history) {
+                const old_snapshot = self.snapshot_history.orderedRemove(0);
+                self.allocator.free(old_snapshot.entities);
+            }
+
+            // Send snapshot in chunks if needed
+            const total_chunks = (snapshot_entities.items.len + self.entities_per_snapshot_chunk - 1) / self.entities_per_snapshot_chunk;
+            var chunk_id: u32 = 0;
+            var entity_start: usize = 0;
+
+            while (entity_start < snapshot_entities.items.len) {
+                const chunk_end = @min(entity_start + self.entities_per_snapshot_chunk, snapshot_entities.items.len);
+                var chunk_msg = Protocol.NetworkMessage.init(.state_snapshot_chunk);
+                chunk_msg.payload.state_snapshot_chunk = .{
+                    .sequence = self.current_sequence,
+                    .chunk_id = chunk_id,
+                    .total_chunks = @intCast(total_chunks),
+                    .timestamp = snapshot.timestamp,
+                    .entities = snapshot_entities.items[entity_start..chunk_end],
                 };
-                try self.broadcastToInitializedClients(create_msg, null);
-                try self.last_entity_states.put(id, current_entity);
-                continue;
+
+                try self.broadcastToInitializedClients(chunk_msg, null);
+                chunk_id += 1;
+                entity_start = chunk_end;
             }
 
-            // Check for updates
-            const last_entity = self.last_entity_states.get(id).?;
-            var has_changes = false;
-            var update_msg = Protocol.NetworkMessage.init(.entity_updated);
-            update_msg.payload.entity_updated = .{ .id = id };
+            self.last_snapshot_time = current_time;
+        } else {
+            // Send delta update based on last snapshot
+            if (self.snapshot_history.items.len == 0) return;
+            const base_snapshot = self.snapshot_history.items[self.snapshot_history.items.len - 1];
 
-            if (!std.meta.eql(last_entity.position, current_entity.position)) {
-                update_msg.payload.entity_updated.position = .{ .x = current_entity.position.x, .y = current_entity.position.y };
-                has_changes = true;
-            }
-            if (last_entity.scale != current_entity.scale) {
-                update_msg.payload.entity_updated.scale = current_entity.scale;
-                has_changes = true;
-            }
-            if (last_entity.deleteable != current_entity.deleteable) {
-                update_msg.payload.entity_updated.deleteable = current_entity.deleteable;
-                has_changes = true;
-            }
-            if (last_entity.entity_type != current_entity.entity_type) {
-                update_msg.payload.entity_updated.entity_type = current_entity.entity_type;
-                has_changes = true;
-            }
-            if (last_entity.active != current_entity.active) {
-                update_msg.payload.entity_updated.active = current_entity.active;
-                has_changes = true;
-            }
-            if (last_entity.parent_id != current_entity.parent_id) {
-                update_msg.payload.entity_updated.parent_id = current_entity.parent_id;
-                has_changes = true;
+            var deltas = std.ArrayList(Protocol.EntityDelta).init(self.allocator);
+            defer deltas.deinit();
+
+            // Calculate deltas from last snapshot
+            for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), entities.items(.parent_id), 0..entities.len) |pos, scale, deleteable, entity_type, active, parent_id, id| {
+                if (id >= entities.len) continue;
+                if (!active) continue;
+
+                // Find entity in base snapshot
+                var found_in_base = false;
+                var base_entity: Protocol.NetworkEntity = undefined;
+                for (base_snapshot.entities) |entity| {
+                    if (entity.id == id) {
+                        found_in_base = true;
+                        base_entity = entity;
+                        break;
+                    }
+                }
+
+                if (!found_in_base) {
+                    // New entity, include all data
+                    try deltas.append(.{
+                        .id = id,
+                        .position_delta = .{ .x = pos.x, .y = pos.y },
+                        .scale_delta = scale,
+                        .deleteable_delta = deleteable,
+                        .entity_type_changed = entity_type,
+                        .active_changed = active,
+                        .parent_id_changed = parent_id,
+                    });
+                    continue;
+                }
+
+                // Check for changes
+                var delta = Protocol.EntityDelta{ .id = id };
+                var has_changes = false;
+
+                if (!std.meta.eql(base_entity.position, .{ .x = pos.x, .y = pos.y })) {
+                    delta.position_delta = .{ .x = pos.x, .y = pos.y };
+                    has_changes = true;
+                }
+                if (base_entity.scale != scale) {
+                    delta.scale_delta = scale;
+                    has_changes = true;
+                }
+                if (base_entity.deleteable != deleteable) {
+                    delta.deleteable_delta = deleteable;
+                    has_changes = true;
+                }
+                if (base_entity.entity_type != entity_type) {
+                    delta.entity_type_changed = entity_type;
+                    has_changes = true;
+                }
+                if (base_entity.active != active) {
+                    delta.active_changed = active;
+                    has_changes = true;
+                }
+                if (base_entity.parent_id != parent_id) {
+                    delta.parent_id_changed = parent_id;
+                    has_changes = true;
+                }
+
+                if (has_changes) {
+                    try deltas.append(delta);
+                }
             }
 
-            if (has_changes) {
-                try self.broadcastToInitializedClients(update_msg, null);
-                try self.last_entity_states.put(id, current_entity);
+            // Send deltas in chunks if needed
+            if (deltas.items.len > 0) {
+                const total_chunks = (deltas.items.len + self.deltas_per_chunk - 1) / self.deltas_per_chunk;
+                var chunk_id: u32 = 0;
+                var delta_start: usize = 0;
+
+                while (delta_start < deltas.items.len) {
+                    const chunk_end = @min(delta_start + self.deltas_per_chunk, deltas.items.len);
+                    var chunk_msg = Protocol.NetworkMessage.init(.state_delta_chunk);
+                    chunk_msg.payload.state_delta_chunk = .{
+                        .base_sequence = base_snapshot.sequence,
+                        .sequence = self.current_sequence,
+                        .chunk_id = chunk_id,
+                        .total_chunks = @intCast(total_chunks),
+                        .timestamp = @as(f64, @floatFromInt(current_time)) / std.time.ns_per_s,
+                        .deltas = deltas.items[delta_start..chunk_end],
+                    };
+
+                    try self.broadcastToInitializedClients(chunk_msg, null);
+                    chunk_id += 1;
+                    delta_start = chunk_end;
+                }
             }
         }
 
-        // Check for deleted entities
-        var it = self.last_entity_states.iterator();
-        while (it.next()) |entry| {
-            const id = entry.key_ptr.*;
-            if (id >= entities.len) {
-                // Entity was deleted
-                var delete_msg = Protocol.NetworkMessage.init(.entity_deleted);
-                delete_msg.payload.entity_deleted = .{ .id = id };
-                try self.broadcastToInitializedClients(delete_msg, null);
-                _ = self.last_entity_states.remove(id);
-            }
-        }
+        self.current_sequence += 1;
     }
 
     fn broadcastToInitializedClients(self: *GameServer, message: Protocol.NetworkMessage, exclude_client: ?u64) !void {

@@ -93,6 +93,13 @@ pub const GameClient = struct {
     network_thread_data: ?*NetworkThread = null,
     last_input_time: f64 = 0,
     mutex: std.Thread.Mutex = .{},
+    last_snapshot: ?Protocol.StateSnapshot = null,
+    last_sequence_received: u32 = 0,
+    interpolation_buffer: std.ArrayList(Protocol.StateSnapshot),
+    interpolation_delay: f64 = 0.1, // 100ms interpolation delay
+    render_time: f64 = 0,
+    pending_snapshot_chunks: std.AutoHashMap(u32, Protocol.StateSnapshotChunk),
+    pending_delta_chunks: std.AutoHashMap(u32, Protocol.StateDeltaChunk),
 
     pub fn init(allocator: std.mem.Allocator, mode: GameMode) !GameClient {
         if (mode == .multiplayer) {
@@ -104,7 +111,7 @@ pub const GameClient = struct {
             game_state.is_client_mode = true;
         }
 
-        return GameClient{
+        const client = GameClient{
             .allocator = allocator,
             .game_state = game_state,
             .socket = null,
@@ -117,7 +124,14 @@ pub const GameClient = struct {
             .last_connect_try = 0,
             .network_thread = null,
             .network_thread_data = null,
+            .last_snapshot = null,
+            .last_sequence_received = 0,
+            .interpolation_buffer = std.ArrayList(Protocol.StateSnapshot).init(allocator),
+            .render_time = 0,
+            .pending_snapshot_chunks = std.AutoHashMap(u32, Protocol.StateSnapshotChunk).init(allocator),
+            .pending_delta_chunks = std.AutoHashMap(u32, Protocol.StateDeltaChunk).init(allocator),
         };
+        return client;
     }
 
     pub fn deinit(self: *GameClient) void {
@@ -174,6 +188,16 @@ pub const GameClient = struct {
 
         self.game_state.deinit();
         std.debug.print("GameState deinitialized\n", .{});
+
+        if (self.last_snapshot) |snapshot| {
+            self.allocator.free(snapshot.entities);
+        }
+        for (self.interpolation_buffer.items) |snapshot| {
+            self.allocator.free(snapshot.entities);
+        }
+        self.interpolation_buffer.deinit();
+        self.pending_snapshot_chunks.deinit();
+        self.pending_delta_chunks.deinit();
     }
 
     pub fn connectToServer(self: *GameClient, host: []const u8, port: u16) !void {
@@ -247,13 +271,34 @@ pub const GameClient = struct {
                         }
                     },
                     .connected => {
-                        // self.mutex.lock();
-                        // defer self.mutex.unlock();
+                        // Update render time for interpolation
+                        self.render_time = current_game_time - self.interpolation_delay;
 
-                        // Poll for new input first
+                        // Interpolate entity positions
+                        if (self.interpolation_buffer.items.len >= 2) {
+                            var i: usize = 0;
+                            while (i < self.interpolation_buffer.items.len - 1) : (i += 1) {
+                                const from = self.interpolation_buffer.items[i];
+                                const to = self.interpolation_buffer.items[i + 1];
+
+                                if (from.timestamp <= self.render_time and to.timestamp > self.render_time) {
+                                    const alpha = (self.render_time - from.timestamp) / (to.timestamp - from.timestamp);
+                                    try self.interpolateStates(from, to, alpha);
+                                    break;
+                                }
+                            }
+
+                            // Remove old snapshots
+                            while (self.interpolation_buffer.items.len > 0 and
+                                self.interpolation_buffer.items[0].timestamp < self.render_time - self.interpolation_delay * 2)
+                            {
+                                const old = self.interpolation_buffer.orderedRemove(0);
+                                self.allocator.free(old.entities);
+                            }
+                        }
+
+                        // Process input events
                         try self.game_state.input_manager.pollLocalInput();
-
-                        // Get pending input events
                         const pending_events = self.game_state.input_manager.processEvents();
                         const current_time = ray.getTime();
 
@@ -269,12 +314,56 @@ pub const GameClient = struct {
                             }
                         }
 
-                        // Clear events after processing them
                         self.game_state.input_manager.clearEvents();
                     },
                     .disconnected => return error.NotConnected,
                 }
             },
+        }
+    }
+
+    fn interpolateStates(self: *GameClient, from: Protocol.StateSnapshot, to: Protocol.StateSnapshot, alpha: f64) !void {
+        // Create a map of entity IDs to their indices for quick lookup
+        var to_indices = std.AutoHashMap(usize, usize).init(self.allocator);
+        defer to_indices.deinit();
+
+        for (to.entities, 0..) |entity, i| {
+            try to_indices.put(entity.id, i);
+        }
+
+        // Interpolate each entity from the 'from' state
+        for (from.entities) |from_entity| {
+            if (to_indices.get(from_entity.id)) |to_idx| {
+                const to_entity = to.entities[to_idx];
+                const entity_id = from_entity.id;
+
+                // Ensure we have capacity
+                while (self.game_state.entity_manager.entities.len <= entity_id) {
+                    try self.game_state.entity_manager.entities.append(self.allocator, .{
+                        .position = .{ .x = from_entity.position.x, .y = from_entity.position.y },
+                        .scale = from_entity.scale,
+                        .deleteable = from_entity.deleteable,
+                        .entity_type = from_entity.entity_type,
+                        .active = from_entity.active,
+                        .parent_id = from_entity.parent_id,
+                    });
+                }
+
+                // Interpolate position
+                const lerped_x = from_entity.position.x + @as(f32, @floatCast(alpha)) * (to_entity.position.x - from_entity.position.x);
+                const lerped_y = from_entity.position.y + @as(f32, @floatCast(alpha)) * (to_entity.position.y - from_entity.position.y);
+                self.game_state.entity_manager.entities.items(.position)[entity_id] = ray.Vector2{ .x = lerped_x, .y = lerped_y };
+
+                // Interpolate scale
+                const lerped_scale = from_entity.scale + @as(f32, @floatCast(alpha)) * (to_entity.scale - from_entity.scale);
+                self.game_state.entity_manager.entities.items(.scale)[entity_id] = lerped_scale;
+
+                // Other properties are discrete, no interpolation needed
+                self.game_state.entity_manager.entities.items(.deleteable)[entity_id] = to_entity.deleteable;
+                self.game_state.entity_manager.entities.items(.entity_type)[entity_id] = to_entity.entity_type;
+                self.game_state.entity_manager.entities.items(.active)[entity_id] = to_entity.active;
+                self.game_state.entity_manager.entities.items(.parent_id)[entity_id] = to_entity.parent_id;
+            }
         }
     }
 
@@ -403,6 +492,340 @@ pub const GameClient = struct {
                 // Remove the player's entity from the game state
                 if (player.player_entity_id < self.game_state.entity_manager.entities.len) {
                     self.game_state.entity_manager.deleteEntity(player.player_entity_id);
+                }
+            },
+
+            .batched_updates => {
+                const batch = message.payload.batched_updates;
+
+                // Handle created entities
+                for (batch.created) |create| {
+                    const entity = create.entity;
+                    // Ensure we have enough capacity
+                    while (self.game_state.entity_manager.entities.len <= entity.id) {
+                        try self.game_state.entity_manager.entities.append(self.allocator, .{
+                            .position = .{ .x = entity.position.x, .y = entity.position.y },
+                            .scale = entity.scale,
+                            .deleteable = entity.deleteable,
+                            .entity_type = entity.entity_type,
+                            .active = entity.active,
+                            .parent_id = entity.parent_id,
+                        });
+                    }
+                }
+
+                // Handle updated entities
+                for (batch.updates) |entity_update| {
+                    if (entity_update.id >= self.game_state.entity_manager.entities.len) continue;
+
+                    if (entity_update.position) |pos| {
+                        self.game_state.entity_manager.entities.items(.position)[entity_update.id] = .{ .x = pos.x, .y = pos.y };
+                    }
+                    if (entity_update.scale) |scale| {
+                        self.game_state.entity_manager.entities.items(.scale)[entity_update.id] = scale;
+                    }
+                    if (entity_update.deleteable) |deleteable| {
+                        self.game_state.entity_manager.entities.items(.deleteable)[entity_update.id] = deleteable;
+                    }
+                    if (entity_update.entity_type) |entity_type| {
+                        self.game_state.entity_manager.entities.items(.entity_type)[entity_update.id] = entity_type;
+                    }
+                    if (entity_update.active) |active| {
+                        self.game_state.entity_manager.entities.items(.active)[entity_update.id] = active;
+                    }
+                    if (entity_update.parent_id) |parent_id| {
+                        self.game_state.entity_manager.entities.items(.parent_id)[entity_update.id] = parent_id;
+                    }
+                }
+
+                // Handle deleted entities
+                for (batch.deleted) |delete| {
+                    if (delete.id < self.game_state.entity_manager.entities.len) {
+                        self.game_state.entity_manager.deleteEntity(delete.id);
+                    }
+                }
+            },
+
+            .state_snapshot => {
+                const snapshot = message.payload.state_snapshot;
+                if (snapshot.sequence <= self.last_sequence_received) return;
+
+                // Store snapshot for interpolation
+                const snapshot_copy = Protocol.StateSnapshot{
+                    .sequence = snapshot.sequence,
+                    .timestamp = snapshot.timestamp,
+                    .entities = try self.allocator.dupe(Protocol.NetworkEntity, snapshot.entities),
+                };
+
+                // Insert snapshot in order
+                var insert_idx: usize = self.interpolation_buffer.items.len;
+                for (self.interpolation_buffer.items, 0..) |buf_snapshot, i| {
+                    if (buf_snapshot.timestamp > snapshot.timestamp) {
+                        insert_idx = i;
+                        break;
+                    }
+                }
+                try self.interpolation_buffer.insert(insert_idx, snapshot_copy);
+
+                self.last_sequence_received = snapshot.sequence;
+            },
+
+            .state_delta => {
+                const delta = message.payload.state_delta;
+                if (delta.sequence <= self.last_sequence_received) return;
+
+                // Find the base snapshot
+                var base_snapshot: ?Protocol.StateSnapshot = null;
+                for (self.interpolation_buffer.items) |snapshot| {
+                    if (snapshot.sequence == delta.base_sequence) {
+                        base_snapshot = snapshot;
+                        break;
+                    }
+                }
+                if (base_snapshot == null) return; // Can't apply delta without base
+
+                // Create new snapshot from base + delta
+                var new_entities = std.ArrayList(Protocol.NetworkEntity).init(self.allocator);
+                defer new_entities.deinit();
+
+                // Copy base entities
+                try new_entities.appendSlice(base_snapshot.?.entities);
+
+                // Apply deltas
+                for (delta.deltas) |entity_delta| {
+                    var found = false;
+                    for (new_entities.items) |*entity| {
+                        if (entity.id == entity_delta.id) {
+                            found = true;
+                            if (entity_delta.position_delta) |pos| {
+                                entity.position = .{ .x = pos.x, .y = pos.y };
+                            }
+                            if (entity_delta.scale_delta) |scale| {
+                                entity.scale = scale;
+                            }
+                            if (entity_delta.deleteable_delta) |deleteable| {
+                                entity.deleteable = deleteable;
+                            }
+                            if (entity_delta.entity_type_changed) |entity_type| {
+                                entity.entity_type = entity_type;
+                            }
+                            if (entity_delta.active_changed) |active| {
+                                entity.active = active;
+                            }
+                            if (entity_delta.parent_id_changed) |parent_id| {
+                                entity.parent_id = parent_id;
+                            }
+                            break;
+                        }
+                    }
+
+                    if (!found) {
+                        // New entity
+                        try new_entities.append(.{
+                            .id = entity_delta.id,
+                            .position = .{ .x = entity_delta.position_delta.?.x, .y = entity_delta.position_delta.?.y },
+                            .scale = entity_delta.scale_delta.?,
+                            .deleteable = entity_delta.deleteable_delta.?,
+                            .entity_type = entity_delta.entity_type_changed.?,
+                            .active = entity_delta.active_changed.?,
+                            .parent_id = entity_delta.parent_id_changed,
+                        });
+                    }
+                }
+
+                // Create new snapshot
+                const new_snapshot = Protocol.StateSnapshot{
+                    .sequence = delta.sequence,
+                    .timestamp = delta.timestamp,
+                    .entities = try self.allocator.dupe(Protocol.NetworkEntity, new_entities.items),
+                };
+
+                // Insert new snapshot in order
+                var insert_idx: usize = self.interpolation_buffer.items.len;
+                for (self.interpolation_buffer.items, 0..) |buf_snapshot, i| {
+                    if (buf_snapshot.timestamp > delta.timestamp) {
+                        insert_idx = i;
+                        break;
+                    }
+                }
+                try self.interpolation_buffer.insert(insert_idx, new_snapshot);
+
+                self.last_sequence_received = delta.sequence;
+            },
+
+            .state_snapshot_chunk => {
+                const chunk = message.payload.state_snapshot_chunk;
+                if (chunk.sequence <= self.last_sequence_received) return;
+
+                // Store chunk
+                const chunk_copy = Protocol.StateSnapshotChunk{
+                    .sequence = chunk.sequence,
+                    .chunk_id = chunk.chunk_id,
+                    .total_chunks = chunk.total_chunks,
+                    .timestamp = chunk.timestamp,
+                    .entities = try self.allocator.dupe(Protocol.NetworkEntity, chunk.entities),
+                };
+                try self.pending_snapshot_chunks.put(chunk.chunk_id, chunk_copy);
+
+                // Check if we have all chunks
+                if (self.pending_snapshot_chunks.count() == chunk.total_chunks) {
+                    // Combine chunks into complete snapshot
+                    var all_entities = std.ArrayList(Protocol.NetworkEntity).init(self.allocator);
+                    defer all_entities.deinit();
+
+                    var chunk_id: u32 = 0;
+                    while (chunk_id < chunk.total_chunks) : (chunk_id += 1) {
+                        const stored_chunk = self.pending_snapshot_chunks.get(chunk_id).?;
+                        try all_entities.appendSlice(stored_chunk.entities);
+                    }
+
+                    // Create complete snapshot
+                    const complete_snapshot = Protocol.StateSnapshot{
+                        .sequence = chunk.sequence,
+                        .timestamp = chunk.timestamp,
+                        .entities = try self.allocator.dupe(Protocol.NetworkEntity, all_entities.items),
+                    };
+
+                    // Insert in interpolation buffer
+                    var insert_idx: usize = self.interpolation_buffer.items.len;
+                    for (self.interpolation_buffer.items, 0..) |buf_snapshot, i| {
+                        if (buf_snapshot.timestamp > chunk.timestamp) {
+                            insert_idx = i;
+                            break;
+                        }
+                    }
+                    try self.interpolation_buffer.insert(insert_idx, complete_snapshot);
+
+                    // Clean up chunks
+                    var it = self.pending_snapshot_chunks.iterator();
+                    while (it.next()) |entry| {
+                        self.allocator.free(entry.value_ptr.*.entities);
+                    }
+                    self.pending_snapshot_chunks.clearRetainingCapacity();
+
+                    self.last_sequence_received = chunk.sequence;
+                }
+            },
+
+            .state_delta_chunk => {
+                const chunk = message.payload.state_delta_chunk;
+                if (chunk.sequence <= self.last_sequence_received) return;
+
+                // Store chunk
+                const chunk_copy = Protocol.StateDeltaChunk{
+                    .base_sequence = chunk.base_sequence,
+                    .sequence = chunk.sequence,
+                    .chunk_id = chunk.chunk_id,
+                    .total_chunks = chunk.total_chunks,
+                    .timestamp = chunk.timestamp,
+                    .deltas = try self.allocator.dupe(Protocol.EntityDelta, chunk.deltas),
+                };
+                try self.pending_delta_chunks.put(chunk.chunk_id, chunk_copy);
+
+                // Check if we have all chunks
+                if (self.pending_delta_chunks.count() == chunk.total_chunks) {
+                    // Find the base snapshot
+                    var base_snapshot: ?Protocol.StateSnapshot = null;
+                    for (self.interpolation_buffer.items) |snapshot| {
+                        if (snapshot.sequence == chunk.base_sequence) {
+                            base_snapshot = snapshot;
+                            break;
+                        }
+                    }
+                    if (base_snapshot == null) {
+                        // Clean up chunks if we can't find base snapshot
+                        var it = self.pending_delta_chunks.iterator();
+                        while (it.next()) |entry| {
+                            self.allocator.free(entry.value_ptr.*.deltas);
+                        }
+                        self.pending_delta_chunks.clearRetainingCapacity();
+                        return;
+                    }
+
+                    // Combine all deltas
+                    var all_deltas = std.ArrayList(Protocol.EntityDelta).init(self.allocator);
+                    defer all_deltas.deinit();
+
+                    var chunk_id: u32 = 0;
+                    while (chunk_id < chunk.total_chunks) : (chunk_id += 1) {
+                        const stored_chunk = self.pending_delta_chunks.get(chunk_id).?;
+                        try all_deltas.appendSlice(stored_chunk.deltas);
+                    }
+
+                    // Create new entities list from base + deltas
+                    var new_entities = std.ArrayList(Protocol.NetworkEntity).init(self.allocator);
+                    defer new_entities.deinit();
+
+                    // Copy base entities
+                    try new_entities.appendSlice(base_snapshot.?.entities);
+
+                    // Apply all deltas
+                    for (all_deltas.items) |entity_delta| {
+                        var found = false;
+                        for (new_entities.items) |*entity| {
+                            if (entity.id == entity_delta.id) {
+                                found = true;
+                                if (entity_delta.position_delta) |pos| {
+                                    entity.position = .{ .x = pos.x, .y = pos.y };
+                                }
+                                if (entity_delta.scale_delta) |scale| {
+                                    entity.scale = scale;
+                                }
+                                if (entity_delta.deleteable_delta) |deleteable| {
+                                    entity.deleteable = deleteable;
+                                }
+                                if (entity_delta.entity_type_changed) |entity_type| {
+                                    entity.entity_type = entity_type;
+                                }
+                                if (entity_delta.active_changed) |active| {
+                                    entity.active = active;
+                                }
+                                if (entity_delta.parent_id_changed) |parent_id| {
+                                    entity.parent_id = parent_id;
+                                }
+                                break;
+                            }
+                        }
+
+                        if (!found) {
+                            // New entity
+                            try new_entities.append(.{
+                                .id = entity_delta.id,
+                                .position = .{ .x = entity_delta.position_delta.?.x, .y = entity_delta.position_delta.?.y },
+                                .scale = entity_delta.scale_delta.?,
+                                .deleteable = entity_delta.deleteable_delta.?,
+                                .entity_type = entity_delta.entity_type_changed.?,
+                                .active = entity_delta.active_changed.?,
+                                .parent_id = entity_delta.parent_id_changed,
+                            });
+                        }
+                    }
+
+                    // Create new snapshot
+                    const new_snapshot = Protocol.StateSnapshot{
+                        .sequence = chunk.sequence,
+                        .timestamp = chunk.timestamp,
+                        .entities = try self.allocator.dupe(Protocol.NetworkEntity, new_entities.items),
+                    };
+
+                    // Insert in interpolation buffer
+                    var insert_idx: usize = self.interpolation_buffer.items.len;
+                    for (self.interpolation_buffer.items, 0..) |buf_snapshot, i| {
+                        if (buf_snapshot.timestamp > chunk.timestamp) {
+                            insert_idx = i;
+                            break;
+                        }
+                    }
+                    try self.interpolation_buffer.insert(insert_idx, new_snapshot);
+
+                    // Clean up chunks
+                    var it = self.pending_delta_chunks.iterator();
+                    while (it.next()) |entry| {
+                        self.allocator.free(entry.value_ptr.*.deltas);
+                    }
+                    self.pending_delta_chunks.clearRetainingCapacity();
+
+                    self.last_sequence_received = chunk.sequence;
                 }
             },
 

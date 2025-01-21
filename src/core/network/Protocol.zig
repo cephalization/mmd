@@ -15,6 +15,11 @@ pub const MessageType = enum {
     entity_deleted,
     initial_state_chunk,
     initial_state_ack,
+    batched_updates,
+    state_snapshot,
+    state_delta,
+    state_snapshot_chunk,
+    state_delta_chunk,
 };
 
 // Network-friendly version of Entity
@@ -76,6 +81,53 @@ pub const InitialStateAck = struct {
     chunk_id: u32,
 };
 
+pub const BatchedEntityUpdates = struct {
+    updates: []EntityUpdated,
+    created: []EntityCreated,
+    deleted: []EntityDeleted,
+    timestamp: f64,
+};
+
+pub const StateSnapshot = struct {
+    sequence: u32,
+    timestamp: f64,
+    entities: []NetworkEntity,
+};
+
+pub const EntityDelta = struct {
+    id: usize,
+    position_delta: ?struct { x: f32, y: f32 } = null,
+    scale_delta: ?f32 = null,
+    deleteable_delta: ?f64 = null,
+    entity_type_changed: ?Entity.EntityType = null,
+    active_changed: ?bool = null,
+    parent_id_changed: ?usize = null,
+};
+
+pub const StateDelta = struct {
+    base_sequence: u32,
+    sequence: u32,
+    timestamp: f64,
+    deltas: []EntityDelta,
+};
+
+pub const StateSnapshotChunk = struct {
+    sequence: u32,
+    chunk_id: u32,
+    total_chunks: u32,
+    timestamp: f64,
+    entities: []NetworkEntity,
+};
+
+pub const StateDeltaChunk = struct {
+    base_sequence: u32,
+    sequence: u32,
+    chunk_id: u32,
+    total_chunks: u32,
+    timestamp: f64,
+    deltas: []EntityDelta,
+};
+
 pub const MessagePayload = union(MessageType) {
     connect_request: ConnectRequest,
     connect_response: ConnectResponse,
@@ -89,6 +141,11 @@ pub const MessagePayload = union(MessageType) {
     entity_deleted: EntityDeleted,
     initial_state_chunk: InitialStateChunk,
     initial_state_ack: InitialStateAck,
+    batched_updates: BatchedEntityUpdates,
+    state_snapshot: StateSnapshot,
+    state_delta: StateDelta,
+    state_snapshot_chunk: StateSnapshotChunk,
+    state_delta_chunk: StateDeltaChunk,
 };
 
 pub const NetworkMessage = struct {
@@ -111,6 +168,11 @@ pub const NetworkMessage = struct {
                 .entity_deleted => .{ .entity_deleted = .{ .id = 0 } },
                 .initial_state_chunk => .{ .initial_state_chunk = .{ .chunk_id = 0, .total_chunks = 0, .entities = &[_]NetworkEntity{} } },
                 .initial_state_ack => .{ .initial_state_ack = .{ .chunk_id = 0 } },
+                .batched_updates => .{ .batched_updates = .{ .updates = &[_]EntityUpdated{}, .created = &[_]EntityCreated{}, .deleted = &[_]EntityDeleted{}, .timestamp = 0 } },
+                .state_snapshot => .{ .state_snapshot = .{ .sequence = 0, .timestamp = 0, .entities = &[_]NetworkEntity{} } },
+                .state_delta => .{ .state_delta = .{ .base_sequence = 0, .sequence = 0, .timestamp = 0, .deltas = &[_]EntityDelta{} } },
+                .state_snapshot_chunk => .{ .state_snapshot_chunk = .{ .sequence = 0, .chunk_id = 0, .total_chunks = 0, .timestamp = 0, .entities = &[_]NetworkEntity{} } },
+                .state_delta_chunk => .{ .state_delta_chunk = .{ .base_sequence = 0, .sequence = 0, .chunk_id = 0, .total_chunks = 0, .timestamp = 0, .deltas = &[_]EntityDelta{} } },
             },
         };
     }
