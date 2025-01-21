@@ -620,7 +620,17 @@ pub const GameClient = struct {
                     }
 
                     if (!found) {
-                        // New entity
+                        // New entity - ensure all required fields are present
+                        if (entity_delta.position_delta == null or
+                            entity_delta.scale_delta == null or
+                            entity_delta.deleteable_delta == null or
+                            entity_delta.entity_type_changed == null or
+                            entity_delta.active_changed == null)
+                        {
+                            std.debug.print("Warning: Incomplete delta data for new entity {}\n", .{entity_delta.id});
+                            continue;
+                        }
+
                         try new_entities.append(.{
                             .id = entity_delta.id,
                             .position = .{ .x = entity_delta.position_delta.?.x, .y = entity_delta.position_delta.?.y },
@@ -788,7 +798,17 @@ pub const GameClient = struct {
                         }
 
                         if (!found) {
-                            // New entity
+                            // New entity - ensure all required fields are present
+                            if (entity_delta.position_delta == null or
+                                entity_delta.scale_delta == null or
+                                entity_delta.deleteable_delta == null or
+                                entity_delta.entity_type_changed == null or
+                                entity_delta.active_changed == null)
+                            {
+                                std.debug.print("Warning: Incomplete delta data for new entity {}\n", .{entity_delta.id});
+                                continue;
+                            }
+
                             try new_entities.append(.{
                                 .id = entity_delta.id,
                                 .position = .{ .x = entity_delta.position_delta.?.x, .y = entity_delta.position_delta.?.y },
