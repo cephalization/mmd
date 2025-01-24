@@ -65,8 +65,8 @@ const NetworkThread = struct {
                 std.debug.print("Error handling message: {}\n", .{err});
             };
 
-            if (delta_accumulator >= 1.0) {
-                std.debug.print("Messages per second: {}\n", .{messages_per_second});
+            if (delta_accumulator >= 5.0) {
+                std.debug.print("Messages received over last 5 seconds: {}\n", .{messages_per_second});
                 messages_per_second = 0;
                 delta_accumulator = 0;
             } else {
