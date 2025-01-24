@@ -323,7 +323,7 @@ pub const GameServer = struct {
     pub fn start(self: *GameServer) !void {
         std.debug.print("Server starting main loop\n", .{});
 
-        const target_frame_time: i128 = std.time.ns_per_s / 120; // Target 120 FPS
+        const target_frame_time: i128 = std.time.ns_per_s / 30; // Target 30 hz server tick rate
 
         while (true) {
             const current_time = std.time.nanoTimestamp();
