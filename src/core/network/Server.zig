@@ -489,7 +489,7 @@ pub const GameServer = struct {
             defer snapshot_entities.deinit();
 
             // Collect all active entities
-            for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), entities.items(.parent_id), 0..entities.len) |pos, scale, deleteable, entity_type, active, parent_id, id| {
+            for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), entities.items(.parent_id), entities.items(.health), 0..entities.len) |pos, scale, deleteable, entity_type, active, parent_id, health, id| {
                 if (id >= entities.len) continue;
                 if (!active) continue; // Only send active entities
 
@@ -501,6 +501,7 @@ pub const GameServer = struct {
                     .entity_type = entity_type,
                     .active = active,
                     .parent_id = parent_id,
+                    .health = health,
                 });
             }
 
@@ -703,7 +704,7 @@ pub const GameServer = struct {
         defer network_entities.deinit();
 
         const entities = self.game_state.entity_manager.entities.slice();
-        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), entities.items(.parent_id), 0..entities.len) |pos, scale, deleteable, entity_type, active, parent_id, id| {
+        for (entities.items(.position), entities.items(.scale), entities.items(.deleteable), entities.items(.entity_type), entities.items(.active), entities.items(.parent_id), entities.items(.health), 0..entities.len) |pos, scale, deleteable, entity_type, active, parent_id, health, id| {
             if (id >= entities.len) continue;
 
             try network_entities.append(.{
@@ -714,6 +715,7 @@ pub const GameServer = struct {
                 .entity_type = entity_type,
                 .active = active,
                 .parent_id = parent_id,
+                .health = health,
             });
         }
 

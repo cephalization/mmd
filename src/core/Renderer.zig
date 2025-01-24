@@ -172,6 +172,7 @@ pub const Renderer = struct {
             const base_radius: f32 = switch (entity_type) {
                 .player => 20.0,
                 .child => 18.0,
+                .enemy => 25.0,
             };
             const screen_radius = base_radius * scale * self.camera.zoom;
 
@@ -184,6 +185,7 @@ pub const Renderer = struct {
             const color = switch (entity_type) {
                 .player => ray.WHITE,
                 .child => if (deleteable > 0) ray.RED else ray.BLUE,
+                .enemy => ray.RED,
             };
 
             // For children, use the slider value for scale

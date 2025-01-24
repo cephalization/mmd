@@ -4,9 +4,11 @@ const ray = @import("../raylib.zig");
 pub const EntityType = enum {
     player,
     child,
+    enemy,
 };
 
 pub const Entity = struct {
+    health: f32,
     position: ray.Vector2,
     scale: f32,
     // time marked for deletion or 0 if not marked
@@ -71,8 +73,9 @@ pub const EntityManager = struct {
         const deleteable = self.entities.items(.deleteable)[entity_id];
         const entity_type = self.entities.items(.entity_type)[entity_id];
         const parent_id = self.entities.items(.parent_id)[entity_id];
-
+        const health = self.entities.items(.health)[entity_id];
         return Entity{
+            .health = health,
             .position = pos,
             .scale = scale,
             .deleteable = deleteable,

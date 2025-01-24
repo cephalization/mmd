@@ -359,6 +359,7 @@ pub const GameClient = struct {
                         .entity_type = from_entity.entity_type,
                         .active = from_entity.active,
                         .parent_id = from_entity.parent_id,
+                        .health = from_entity.health,
                     });
                 }
 
@@ -413,6 +414,7 @@ pub const GameClient = struct {
                             .entity_type = entity.entity_type,
                             .active = entity.active,
                             .parent_id = entity.parent_id,
+                            .health = entity.health,
                         });
                     }
 
@@ -423,6 +425,7 @@ pub const GameClient = struct {
                     self.game_state.entity_manager.entities.items(.entity_type)[entity.id] = entity.entity_type;
                     self.game_state.entity_manager.entities.items(.active)[entity.id] = entity.active;
                     self.game_state.entity_manager.entities.items(.parent_id)[entity.id] = entity.parent_id;
+                    self.game_state.entity_manager.entities.items(.health)[entity.id] = entity.health;
                 }
 
                 // Send acknowledgment
@@ -444,6 +447,7 @@ pub const GameClient = struct {
                         .entity_type = entity.entity_type,
                         .active = entity.active,
                         .parent_id = entity.parent_id,
+                        .health = entity.health,
                     });
                 }
             },
@@ -469,6 +473,9 @@ pub const GameClient = struct {
                 }
                 if (entity_update.parent_id) |parent_id| {
                     self.game_state.entity_manager.entities.items(.parent_id)[entity_update.id] = parent_id;
+                }
+                if (entity_update.health) |health| {
+                    self.game_state.entity_manager.entities.items(.health)[entity_update.id] = health;
                 }
             },
 
@@ -496,6 +503,7 @@ pub const GameClient = struct {
                         .entity_type = .player,
                         .active = true,
                         .parent_id = null,
+                        .health = 100.0,
                     });
                 }
             },
@@ -523,6 +531,7 @@ pub const GameClient = struct {
                             .entity_type = entity.entity_type,
                             .active = entity.active,
                             .parent_id = entity.parent_id,
+                            .health = entity.health,
                         });
                     }
                 }
@@ -548,6 +557,9 @@ pub const GameClient = struct {
                     }
                     if (entity_update.parent_id) |parent_id| {
                         self.game_state.entity_manager.entities.items(.parent_id)[entity_update.id] = parent_id;
+                    }
+                    if (entity_update.health) |health| {
+                        self.game_state.entity_manager.entities.items(.health)[entity_update.id] = health;
                     }
                 }
 
@@ -628,6 +640,9 @@ pub const GameClient = struct {
                             if (entity_delta.parent_id_changed) |parent_id| {
                                 entity.parent_id = parent_id;
                             }
+                            if (entity_delta.health_delta) |health| {
+                                entity.health = health;
+                            }
                             break;
                         }
                     }
@@ -652,6 +667,7 @@ pub const GameClient = struct {
                             .entity_type = entity_delta.entity_type_changed.?,
                             .active = entity_delta.active_changed.?,
                             .parent_id = entity_delta.parent_id_changed,
+                            .health = entity_delta.health_delta.?,
                         });
                     }
                 }
@@ -806,6 +822,9 @@ pub const GameClient = struct {
                                 if (entity_delta.parent_id_changed) |parent_id| {
                                     entity.parent_id = parent_id;
                                 }
+                                if (entity_delta.health_delta) |health| {
+                                    entity.health = health;
+                                }
                                 break;
                             }
                         }
@@ -816,7 +835,8 @@ pub const GameClient = struct {
                                 entity_delta.scale_delta == null or
                                 entity_delta.deleteable_delta == null or
                                 entity_delta.entity_type_changed == null or
-                                entity_delta.active_changed == null)
+                                entity_delta.active_changed == null or
+                                entity_delta.health_delta == null)
                             {
                                 std.debug.print("Warning: Incomplete delta data for new entity {}\n", .{entity_delta.id});
                                 continue;
@@ -830,6 +850,7 @@ pub const GameClient = struct {
                                 .entity_type = entity_delta.entity_type_changed.?,
                                 .active = entity_delta.active_changed.?,
                                 .parent_id = entity_delta.parent_id_changed,
+                                .health = entity_delta.health_delta.?,
                             });
                         }
                     }

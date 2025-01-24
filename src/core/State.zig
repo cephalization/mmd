@@ -17,6 +17,14 @@ pub const AVOIDANCE_WEIGHT: f32 = 0.5; // How strongly avoidance forces are appl
 pub const ATTRACTION_WEIGHT: f32 = 0.005; // How strongly objects are attracted to player
 pub const MIN_DISTANCE: f32 = 0.001; // Minimum distance to prevent division by zero
 
+// Enemy behavior constants
+pub const ENEMY_DETECTION_RADIUS: f32 = 400.0; // How far enemies can detect players
+pub const ENEMY_GROUP_RADIUS: f32 = 50.0; // How close enemies need to be to group together
+pub const ENEMY_MOVE_SPEED: f32 = 25.0; // Base enemy movement speed
+pub const ENEMY_RANDOM_FORCE: f32 = 30.0; // Strength of random movement
+pub const ENEMY_GROUP_WEIGHT: f32 = 0.4; // How strongly enemies group together
+pub const ENEMY_CHASE_WEIGHT: f32 = 0.8; // How strongly enemies chase players
+
 pub const StateEvent = struct {
     timestamp: f64,
     source_player_id: usize,
@@ -81,13 +89,13 @@ pub const GameState = struct {
             .physics_time_accumulator = 0,
         };
 
-        if (create_player) {
-            const window_width = ray.getScreenWidth();
-            const window_height = ray.getScreenHeight();
+        const center_pos = ray.Vector2{ .x = @divTrunc(@as(f32, @floatFromInt(ray.getScreenWidth())), 2), .y = @divTrunc(@as(f32, @floatFromInt(ray.getScreenHeight())), 2) };
 
+        if (create_player) {
             // Create player entity
             const player_entity = Entity.Entity{
-                .position = .{ .x = @divTrunc(@as(f32, @floatFromInt(window_width)), 2), .y = @divTrunc(@as(f32, @floatFromInt(window_height)), 2) },
+                .health = 100.0,
+                .position = center_pos,
                 .scale = 1.0,
                 .deleteable = 0,
                 .entity_type = .player,
@@ -102,6 +110,27 @@ pub const GameState = struct {
                 .shape = .{ .circle = .{ .radius = 16.0 } },
                 .damping = 0.95,
             });
+        }
+
+        // create 100 enemy entities, spread out randomly away from player
+        for (0..100) |i| {
+            const angle = @as(f32, @floatFromInt(i + 100)) * std.math.pi / 180.0;
+            const radius = 2000.0;
+            var position: ray.Vector2 = .{ .x = center_pos.x + radius * std.math.cos(angle), .y = center_pos.y + radius * std.math.sin(angle) };
+            var bump: f32 = 0.0;
+            // re-roll position until it's not in a wall
+            while (state.world.queryPoint(position) == .Wall) {
+                position = .{ .x = center_pos.x + radius * std.math.cos(angle + bump), .y = center_pos.y + radius * std.math.sin(angle + bump) };
+                bump += 1.0;
+            }
+            const enemy_entity = Entity.Entity{
+                .health = 100.0,
+                .position = .{ .x = center_pos.x + radius * std.math.cos(angle), .y = center_pos.y + radius * std.math.sin(angle) },
+                .scale = 1.0,
+                .deleteable = 0,
+                .entity_type = .enemy,
+            };
+            _ = try state.entity_manager.createEntity(enemy_entity, null);
         }
 
         return state;
@@ -284,6 +313,7 @@ pub const GameState = struct {
                     .y = player.position.y + spawn_radius * std.math.sin(angle),
                 };
                 const new_entity = Entity.Entity{
+                    .health = 100.0,
                     .position = new_position,
                     .scale = 1.0 / 6.0,
                     .deleteable = 0,
@@ -390,6 +420,88 @@ pub const GameState = struct {
         }
 
         self.player_directions.clearRetainingCapacity();
+
+        // Update enemy positions using physics
+        for (self.entity_manager.entities.items(.entity_type), 0..self.entity_manager.entities.len) |entity_type, id| {
+            if (entity_type == .enemy) {
+                // Skip if enemy is not active
+                if (!self.entity_manager.entities.items(.active)[id]) continue;
+
+                // Ensure enemy has physics component
+                if (!self.physics_system.components.contains(id)) {
+                    self.physics_system.addComponent(id, .{
+                        .velocity = .{ .x = 0, .y = 0 },
+                        .mass = 1.0,
+                        .shape = .{ .circle = .{ .radius = 12.0 } },
+                        .damping = 0.95,
+                    }) catch continue;
+                }
+
+                const enemy_pos = self.entity_manager.entities.items(.position)[id];
+                var nearest_player_dist: f32 = std.math.inf(f32);
+                var nearest_player_pos: ?ray.Vector2 = null;
+
+                // Find nearest player
+                for (self.entity_manager.entities.items(.entity_type), 0..self.entity_manager.entities.len) |other_type, other_id| {
+                    if (other_type == .player and self.entity_manager.entities.items(.active)[other_id]) {
+                        const player_pos = self.entity_manager.entities.items(.position)[other_id];
+                        const dx = player_pos.x - enemy_pos.x;
+                        const dy = player_pos.y - enemy_pos.y;
+                        const dist = @sqrt(dx * dx + dy * dy);
+                        if (dist < nearest_player_dist) {
+                            nearest_player_dist = dist;
+                            nearest_player_pos = player_pos;
+                        }
+                    }
+                }
+
+                // Calculate forces
+                var force = ray.Vector2{ .x = 0, .y = 0 };
+
+                // Random movement
+                const random_angle = @as(f32, @floatFromInt(ray.getRandomValue(0, 360))) * std.math.pi / 180.0;
+                force.x += @cos(random_angle) * ENEMY_RANDOM_FORCE;
+                force.y += @sin(random_angle) * ENEMY_RANDOM_FORCE;
+
+                // Group with nearby enemies
+                var group_force = ray.Vector2{ .x = 0, .y = 0 };
+                var group_count: f32 = 0;
+                for (self.entity_manager.entities.items(.entity_type), 0..self.entity_manager.entities.len) |other_type, other_id| {
+                    if (other_type == .enemy and id != other_id and self.entity_manager.entities.items(.active)[other_id]) {
+                        const other_pos = self.entity_manager.entities.items(.position)[other_id];
+                        const dx = other_pos.x - enemy_pos.x;
+                        const dy = other_pos.y - enemy_pos.y;
+                        const dist = @sqrt(dx * dx + dy * dy);
+                        if (dist > MIN_DISTANCE and dist < ENEMY_GROUP_RADIUS) {
+                            group_force.x += dx / dist;
+                            group_force.y += dy / dist;
+                            group_count += 1;
+                        }
+                    }
+                }
+
+                if (group_count > 0) {
+                    force.x += (group_force.x / group_count) * ENEMY_GROUP_WEIGHT * ENEMY_MOVE_SPEED;
+                    force.y += (group_force.y / group_count) * ENEMY_GROUP_WEIGHT * ENEMY_MOVE_SPEED;
+                }
+
+                // Chase nearest player if within detection radius
+                if (nearest_player_pos) |player_pos| {
+                    if (nearest_player_dist < ENEMY_DETECTION_RADIUS) {
+                        const dx = player_pos.x - enemy_pos.x;
+                        const dy = player_pos.y - enemy_pos.y;
+                        const dist = @sqrt(dx * dx + dy * dy);
+                        if (dist > MIN_DISTANCE) {
+                            force.x += (dx / dist) * ENEMY_CHASE_WEIGHT * ENEMY_MOVE_SPEED;
+                            force.y += (dy / dist) * ENEMY_CHASE_WEIGHT * ENEMY_MOVE_SPEED;
+                        }
+                    }
+                }
+
+                // Apply the combined forces
+                self.physics_system.applyForce(id, force);
+            }
+        }
     }
 
     pub fn createPlayerEntity(self: *GameState) !usize {
@@ -409,6 +521,7 @@ pub const GameState = struct {
                 .y = center_y + random_radius * @sin(random_angle),
             },
             .scale = 1.0,
+            .health = 100.0,
             .deleteable = 0,
             .entity_type = .player,
         };

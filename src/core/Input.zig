@@ -97,17 +97,18 @@ pub const InputManager = struct {
 
         self.state.direction = new_direction;
 
+        // Disabled for now, this was more of a fun testing feature than anything else
         // Handle spawn input
-        const spawn_state = ray.isKeyDown(ray.KeyboardKey.KEY_SPACE);
-        self.state.spawning = spawn_state;
-        if (spawn_state) {
-            try self.event_queue.append(.{
-                .source = .local,
-                .timestamp = current_time,
-                .source_player_id = self.player_id,
-                .data = .{ .spawn = spawn_state },
-            });
-        }
+        // const spawn_state = ray.isKeyDown(ray.KeyboardKey.KEY_SPACE);
+        // self.state.spawning = spawn_state;
+        // if (spawn_state) {
+        //     try self.event_queue.append(.{
+        //         .source = .local,
+        //         .timestamp = current_time,
+        //         .source_player_id = self.player_id,
+        //         .data = .{ .spawn = spawn_state },
+        //     });
+        // }
 
         // Handle delete input
         var delete_state = self.state.marking_delete;
