@@ -189,6 +189,21 @@ pub const GameClient = struct {
         self.game_state.deinit();
         std.debug.print("GameState deinitialized\n", .{});
 
+        // Clean up any pending chunks and their allocated memory
+        {
+            var it = self.pending_delta_chunks.iterator();
+            while (it.next()) |entry| {
+                self.allocator.free(entry.value_ptr.*.deltas);
+            }
+            self.pending_delta_chunks.deinit();
+
+            var snapshot_it = self.pending_snapshot_chunks.iterator();
+            while (snapshot_it.next()) |entry| {
+                self.allocator.free(entry.value_ptr.*.entities);
+            }
+            self.pending_snapshot_chunks.deinit();
+        }
+
         if (self.last_snapshot) |snapshot| {
             self.allocator.free(snapshot.entities);
         }
@@ -196,8 +211,6 @@ pub const GameClient = struct {
             self.allocator.free(snapshot.entities);
         }
         self.interpolation_buffer.deinit();
-        self.pending_snapshot_chunks.deinit();
-        self.pending_delta_chunks.deinit();
     }
 
     pub fn connectToServer(self: *GameClient, host: []const u8, port: u16) !void {
@@ -838,7 +851,7 @@ pub const GameClient = struct {
                     }
                     try self.interpolation_buffer.insert(insert_idx, new_snapshot);
 
-                    // Clean up chunks
+                    // Clean up chunks and their allocated memory
                     var it = self.pending_delta_chunks.iterator();
                     while (it.next()) |entry| {
                         self.allocator.free(entry.value_ptr.*.deltas);

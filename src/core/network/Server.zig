@@ -149,9 +149,9 @@ const SenderThread = struct {
             }
             self.mutex.unlock();
 
-            // Print stats every second
-            if (delta_accumulator >= std.time.ns_per_s) {
-                std.debug.print("Messages sent per second: {}\n", .{messages_per_second});
+            // Print stats every 5 seconds
+            if (delta_accumulator >= 5 * std.time.ns_per_s) {
+                std.debug.print("Messages sent over last 5 seconds: {}\n", .{messages_per_second});
                 messages_per_second = 0;
                 delta_accumulator = 0;
             }
